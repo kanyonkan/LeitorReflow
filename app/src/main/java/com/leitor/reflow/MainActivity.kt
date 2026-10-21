@@ -1,5 +1,6 @@
 package com.leitor.reflow
 
+import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -39,6 +40,36 @@ import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import java.util.concurrent.Executors
+
+/**
+ * HorizontalScrollView mede o filho sem limite de largura e ignora o width dele.
+ * Aqui o filho é medido exatamente com a largura definida (tela x zoom), então o
+ * texto do refluxo quebra na largura da tela.
+ */
+class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
+    override fun measureChildWithMargins(
+        child: View,
+        parentWidthMeasureSpec: Int,
+        widthUsed: Int,
+        parentHeightMeasureSpec: Int,
+        heightUsed: Int
+    ) {
+        val lp = child.layoutParams as ViewGroup.MarginLayoutParams
+        if (lp.width <= 0) {
+            super.measureChildWithMargins(
+                child, parentWidthMeasureSpec, widthUsed, parentHeightMeasureSpec, heightUsed
+            )
+            return
+        }
+        val w = MeasureSpec.makeMeasureSpec(lp.width, MeasureSpec.EXACTLY)
+        val h = getChildMeasureSpec(
+            parentHeightMeasureSpec,
+            paddingTop + paddingBottom + lp.topMargin + lp.bottomMargin + heightUsed,
+            lp.height
+        )
+        child.measure(w, h)
+    }
+}
 
 class MainActivity : AppCompatActivity() {
 
@@ -146,7 +177,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, dp(30), 0, dp(30))
             setItemViewCacheSize(2)
         }
-        hScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        hScroll = FixedWidthScroll(this).apply { isHorizontalScrollBarEnabled = false }
         hScroll.addView(list, FrameLayout.LayoutParams(dp(300), ViewGroup.LayoutParams.MATCH_PARENT))
         root.addView(
             hScroll,
