@@ -22,6 +22,13 @@ Para instalar, copie o `app-debug.apk` para o celular e permita "instalar apps d
 - **Modo: Refluxo / Original**: alterna entre o texto reorganizado e as páginas como no PDF. No modo Original, A− e A+ ajustam o zoom (1x a 2x) e a tela rola para os lados quando ampliada.
 - **Noite**: no modo Original, as cores das páginas são invertidas.
 
+- **Links e índice clicável:** toque num link do PDF para ir à página (ou abrir o endereço). O botão Voltar do Android retorna ao ponto de onde você saiu.
+- **Copiar texto:** no modo Refluxo, pressione e arraste sobre o texto para marcar e use Copiar.
+- **Pinça:** feche ou abra dois dedos para dar zoom, nos dois modos. Os botões A− e A+ continuam funcionando (no modo Original, o zoom vai até 2,5x).
+- **Virar página ⇄:** deslizar rápido para os lados muda de página (além da rolagem vertical). Pode ser desligado.
+- **Lembrar página:** reabre o arquivo na última página lida. Pode ser desligado.
+- Ao trocar entre Refluxo e Original, você continua na mesma página.
+
 ## Como funciona
 - `Reflow.kt`: junta linhas em parágrafos, remove hifenização de fim de linha e números de página soltos.
 - `MainActivity.kt`: abre o PDF, extrai o texto página a página (PdfBox-Android) e mostra numa lista com rolagem.

@@ -1,6 +1,7 @@
 package com.leitor.reflow
 
 import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -14,10 +15,17 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
+import android.provider.OpenableColumns
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.TextPaint
+import android.text.style.ClickableSpan
 import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -28,18 +36,21 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.doOnNextLayout
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.LinearSmoothScroller
 import androidx.recyclerview.widget.RecyclerView
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
-import com.tom_roush.pdfbox.text.PDFTextStripper
 import java.util.concurrent.Executors
+import kotlin.math.abs
 
 /**
  * HorizontalScrollView mede o filho sem limite de largura e ignora o width dele.
@@ -71,17 +82,60 @@ class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
     }
 }
 
+/**
+ * Texto selecionável (pressionar e arrastar para marcar e copiar) que também
+ * reage ao toque simples sobre links (ClickableSpan).
+ */
+class LinkTextView(context: Context) : TextView(context) {
+    private val detector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onSingleTapUp(e: MotionEvent): Boolean {
+            val l = layout ?: return false
+            val sp = text as? Spanned ?: return false
+            val x = e.x - totalPaddingLeft + scrollX
+            val y = e.y - totalPaddingTop + scrollY
+            if (y < 0 || y > l.height) return false
+            val line = l.getLineForVertical(y.toInt())
+            if (x < l.getLineLeft(line) || x > l.getLineRight(line)) return false
+            val off = l.getOffsetForHorizontal(line, x)
+            val spans = sp.getSpans(off, off, ClickableSpan::class.java)
+            if (spans.isNotEmpty()) {
+                spans[0].onClick(this@LinkTextView)
+                return true
+            }
+            return false
+        }
+    })
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        detector.onTouchEvent(event)
+        return super.onTouchEvent(event)
+    }
+}
+
 class MainActivity : AppCompatActivity() {
+
+    private companion object {
+        const val ZOOM_MAX = 2.5f
+        const val ZOOM_STEP = 0.25f
+        const val TEXT_MIN = 12f
+        const val TEXT_MAX = 40f
+        const val RENDER_MAX_W = 2700
+    }
+
+    private class PageText(val text: String, val spans: List<Reflow.Span>)
 
     private val main = Handler(Looper.getMainLooper())
 
     // ---- modo refluxo (texto) ----
-    private val pages = ArrayList<String>()
+    private val pages = ArrayList<PageText>()
+    private val reflowTargets = ArrayList<LinkTarget>()
     private var pagesUri: Uri? = null
     private var pagesComplete = false
 
     // ---- modo original (imagem das páginas) ----
     private val sizes = ArrayList<IntArray>() // [largura, altura] de cada página
+    private val origLinks = ArrayList<List<PageLink>>()
+    private val origTargets = ArrayList<LinkTarget>()
     private val renderExec = Executors.newSingleThreadExecutor()
     private val rendererLock = Any()
     private var renderer: PdfRenderer? = null
@@ -89,13 +143,27 @@ class MainActivity : AppCompatActivity() {
 
     // ---- estado ----
     private var currentUri: Uri? = null
+    private var currentKey = ""
+    private var pendingPage = -1
+    private val backStack = ArrayList<Int>()
+    private var lastLinkTap = 0L
+
     private var reflowMode = true
     private var night = false
     private var textSp = 18f
     private var zoom = 1f
+    private var swipePages = true
+    private var rememberPage = true
     private var barVisible = true
     private var loadToken = 0
     private var listWidth = 0
+
+    // ---- pinça ----
+    private var scaling = false
+    private var cancelSent = false
+    private var pinchedRecently = false
+    private var pinchFactor = 1f
+    private var pinchFocusX = 0f
 
     // ---- views ----
     private lateinit var root: FrameLayout
@@ -105,6 +173,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var modeBtn: Button
     private lateinit var themeBtn: Button
+    private lateinit var swipeBtn: Button
+    private lateinit var rememberBtn: Button
     private val buttons = ArrayList<Button>()
     private lateinit var controller: WindowInsetsControllerCompat
 
@@ -126,10 +196,12 @@ class MainActivity : AppCompatActivity() {
         if (uri != null) open(uri)
     }
 
-    // toque simples no centro da tela mostra/esconde a barra
+    // toque no centro mostra/esconde a barra; deslize rápido para os lados vira a página
     private val tapDetector by lazy {
         GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                // um link acabou de ser tocado: não alterna a barra
+                if (SystemClock.uptimeMillis() - lastLinkTap < 700) return false
                 val w = root.width
                 val h = root.height
                 if (e.x > w * 0.25f && e.x < w * 0.75f && e.y > h * 0.25f && e.y < h * 0.75f) {
@@ -138,10 +210,79 @@ class MainActivity : AppCompatActivity() {
                 }
                 return false
             }
+
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+                if (!swipePages || e1 == null || scaling || pinchedRecently) return false
+                // com zoom lateral no modo original, o deslize move a página em vez de virar
+                if (!reflowMode && listWidth > resources.displayMetrics.widthPixels + 2) return false
+                val dx = e2.x - e1.x
+                val dy = e2.y - e1.y
+                if (abs(dx) > dp(80) && abs(dx) > abs(dy) * 1.5f && abs(vx) > 600f) {
+                    turnPage(if (dx < 0) 1 else -1)
+                    return true
+                }
+                return false
+            }
         })
     }
 
+    private val scaleDetector by lazy {
+        ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScaleBegin(d: ScaleGestureDetector): Boolean {
+                scaling = true
+                cancelSent = false
+                pinchFactor = 1f
+                pinchFocusX = d.focusX
+                return true
+            }
+
+            override fun onScale(d: ScaleGestureDetector): Boolean {
+                pinchFocusX = d.focusX
+                if (reflowMode) {
+                    textSp = (textSp * d.scaleFactor).coerceIn(TEXT_MIN, TEXT_MAX)
+                    reflowAdapter.applyTextSizeToVisible()
+                } else {
+                    val target = (zoom * pinchFactor * d.scaleFactor).coerceIn(1f, ZOOM_MAX)
+                    pinchFactor = target / zoom
+                    hScroll.pivotX = d.focusX
+                    hScroll.pivotY = d.focusY
+                    hScroll.scaleX = pinchFactor
+                    hScroll.scaleY = pinchFactor
+                }
+                return true
+            }
+
+            override fun onScaleEnd(d: ScaleGestureDetector) {
+                scaling = false
+                pinchedRecently = true
+                if (reflowMode) {
+                    getSharedPreferences("leitor", MODE_PRIVATE).edit().putFloat("textSp", textSp).apply()
+                    reflowAdapter.notifyDataSetChanged()
+                } else {
+                    val f = pinchFactor
+                    hScroll.scaleX = 1f
+                    hScroll.scaleY = 1f
+                    pinchFactor = 1f
+                    if (abs(f - 1f) > 0.01f) setZoom(zoom * f, pinchFocusX)
+                }
+            }
+        }).also { it.isQuickScaleEnabled = false }
+    }
+
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) pinchedRecently = false
+        scaleDetector.onTouchEvent(ev)
+        if (scaling) {
+            // durante a pinça, o resto da tela não recebe os toques
+            if (!cancelSent) {
+                cancelSent = true
+                val c = MotionEvent.obtain(ev)
+                c.action = MotionEvent.ACTION_CANCEL
+                super.dispatchTouchEvent(c)
+                c.recycle()
+            }
+            return true
+        }
         tapDetector.onTouchEvent(ev)
         return super.dispatchTouchEvent(ev)
     }
@@ -153,8 +294,10 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("leitor", MODE_PRIVATE)
         night = prefs.getBoolean("night", false)
         textSp = prefs.getFloat("textSp", 18f)
-        zoom = prefs.getFloat("zoom", 1f)
+        zoom = prefs.getFloat("zoom", 1f).coerceIn(1f, ZOOM_MAX)
         reflowMode = prefs.getBoolean("reflow", true)
+        swipePages = prefs.getBoolean("swipe", true)
+        rememberPage = prefs.getBoolean("remember", true)
 
         // tela cheia: o app desenha atrás das barras do sistema
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -188,18 +331,32 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(6), dp(4), dp(6), dp(4))
         }
-        val row = LinearLayout(this).apply {
+        val row1 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        row.addView(makeBtn("Abrir") { picker.launch(arrayOf("application/pdf")) })
+        row1.addView(makeBtn("Abrir") { picker.launch(arrayOf("application/pdf")) })
         modeBtn = makeBtn("") { toggleMode() }
-        row.addView(modeBtn)
-        row.addView(makeBtn("A−") { changeSize(-1) })
-        row.addView(makeBtn("A+") { changeSize(+1) })
+        row1.addView(modeBtn)
+        row1.addView(makeBtn("A−") { changeSize(-1) })
+        row1.addView(makeBtn("A+") { changeSize(+1) })
         themeBtn = makeBtn("") { toggleTheme() }
-        row.addView(themeBtn)
-        bar.addView(row, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        row1.addView(themeBtn)
+        bar.addView(row1, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+        val row2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        swipeBtn = makeBtn("") { toggleSwipe() }
+        rememberBtn = makeBtn("") { toggleRemember() }
+        row2.addView(swipeBtn)
+        row2.addView(rememberBtn)
+        val row2Lp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        row2Lp.topMargin = dp(2)
+        bar.addView(row2, row2Lp)
 
         status = TextView(this).apply {
             text = "Toque em Abrir e escolha um PDF."
@@ -231,9 +388,23 @@ class MainActivity : AppCompatActivity() {
             insets
         }
 
+        // "Voltar" desfaz o salto de um link interno (volta para onde você estava)
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (backStack.isNotEmpty()) {
+                    val pos = backStack.removeAt(backStack.size - 1)
+                    lm().scrollToPositionWithOffset(pos, 0)
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
+
         applyWidth()
         applyMode()
         applyTheme()
+        updateLabels()
         ViewCompat.requestApplyInsets(root)
 
         intent?.data?.let { open(it) }
@@ -245,6 +416,11 @@ class MainActivity : AppCompatActivity() {
         list.adapter?.notifyDataSetChanged()
     }
 
+    override fun onPause() {
+        super.onPause()
+        savePage()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         loadToken++
@@ -253,6 +429,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ------------------------------------------------------------------ interface
+
+    private fun lm(): LinearLayoutManager = list.layoutManager as LinearLayoutManager
 
     private fun makeBtn(label: String, onClick: () -> Unit): Button =
         Button(this).apply {
@@ -268,6 +446,13 @@ class MainActivity : AppCompatActivity() {
                 .apply { setMargins(dp(2), 0, dp(2), 0) }
         }
 
+    private fun updateLabels() {
+        modeBtn.text = if (reflowMode) "Modo: Refluxo" else "Modo: Original"
+        themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
+        swipeBtn.text = if (swipePages) "Virar página ⇄: Sim" else "Virar página ⇄: Não"
+        rememberBtn.text = if (rememberPage) "Lembrar página: Sim" else "Lembrar página: Não"
+    }
+
     private fun toggleBar() {
         barVisible = !barVisible
         bar.visibility = if (barVisible) View.VISIBLE else View.GONE
@@ -276,36 +461,68 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun changeSize(dir: Int) {
-        val prefs = getSharedPreferences("leitor", MODE_PRIVATE).edit()
         if (reflowMode) {
-            textSp = (textSp + dir).coerceIn(12f, 34f)
-            prefs.putFloat("textSp", textSp)
+            textSp = (textSp + dir).coerceIn(TEXT_MIN, TEXT_MAX)
+            getSharedPreferences("leitor", MODE_PRIVATE).edit().putFloat("textSp", textSp).apply()
             reflowAdapter.notifyDataSetChanged()
         } else {
-            zoom = (zoom + dir * 0.25f).coerceIn(1f, 2f)
-            prefs.putFloat("zoom", zoom)
-            applyWidth()
-            imageAdapter.notifyDataSetChanged()
+            setZoom(zoom + dir * ZOOM_STEP, resources.displayMetrics.widthPixels / 2f)
         }
-        prefs.apply()
+    }
+
+    /** Zoom do modo original: mantém a página em que você está e o ponto focal. */
+    private fun setZoom(newZoom: Float, focusX: Float) {
+        val old = zoom
+        zoom = newZoom.coerceIn(1f, ZOOM_MAX)
+        if (zoom == old) return
+        getSharedPreferences("leitor", MODE_PRIVATE).edit().putFloat("zoom", zoom).apply()
+
+        val ratio = zoom / old
+        val first = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
+        val topOff = lm().findViewByPosition(first)?.top ?: 0
+        val sx = hScroll.scrollX
+
+        applyWidth()
+        imageAdapter.notifyDataSetChanged()
+        lm().scrollToPositionWithOffset(first, (topOff * ratio).toInt())
+        hScroll.doOnNextLayout {
+            hScroll.scrollTo(((sx + focusX) * ratio - focusX).toInt().coerceAtLeast(0), 0)
+        }
     }
 
     private fun toggleTheme() {
         night = !night
         getSharedPreferences("leitor", MODE_PRIVATE).edit().putBoolean("night", night).apply()
         applyTheme()
+        updateLabels()
+    }
+
+    private fun toggleSwipe() {
+        swipePages = !swipePages
+        getSharedPreferences("leitor", MODE_PRIVATE).edit().putBoolean("swipe", swipePages).apply()
+        updateLabels()
+    }
+
+    private fun toggleRemember() {
+        rememberPage = !rememberPage
+        getSharedPreferences("leitor", MODE_PRIVATE).edit().putBoolean("remember", rememberPage).apply()
+        if (rememberPage) savePage()
+        updateLabels()
     }
 
     private fun toggleMode() {
+        // guarda a página atual para continuar nela no outro modo
+        if (pendingPage < 0 && (list.adapter?.itemCount ?: 0) > 0) pendingPage = currentPage()
         reflowMode = !reflowMode
         getSharedPreferences("leitor", MODE_PRIVATE).edit().putBoolean("reflow", reflowMode).apply()
+        hScroll.scrollTo(0, 0)
         applyMode()
         applyTheme()
+        updateLabels()
         show()
     }
 
     private fun applyMode() {
-        modeBtn.text = if (reflowMode) "Modo: Refluxo" else "Modo: Original"
         applyWidth()
         list.adapter = if (reflowMode) reflowAdapter else imageAdapter
     }
@@ -330,22 +547,120 @@ class MainActivity : AppCompatActivity() {
             it.setTextColor(fg)
             it.setBackgroundColor(if (night) Color.parseColor("#2C2C2C") else Color.parseColor("#D8D3C4"))
         }
-        themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
         controller.isAppearanceLightStatusBars = !night
         controller.isAppearanceLightNavigationBars = !night
         reflowAdapter.notifyDataSetChanged()
         imageAdapter.notifyDataSetChanged()
     }
 
+    // ------------------------------------------------------------------ páginas
+
+    /** Página que está na parte de cima da tela. */
+    private fun currentPage(): Int {
+        val v = list.findChildViewUnder(list.width / 2f, list.height * 0.3f)
+        val p = if (v != null) list.getChildAdapterPosition(v) else RecyclerView.NO_POSITION
+        return if (p != RecyclerView.NO_POSITION) p else lm().findFirstVisibleItemPosition().coerceAtLeast(0)
+    }
+
+    private fun restorePending() {
+        val p = pendingPage
+        if (p < 0) return
+        val count = list.adapter?.itemCount ?: 0
+        if (count > p) {
+            pendingPage = -1
+            lm().scrollToPositionWithOffset(p, 0)
+        }
+    }
+
+    private fun smoothToPage(p: Int) {
+        val scroller = object : LinearSmoothScroller(this) {
+            override fun getVerticalSnapPreference(): Int = SNAP_TO_START
+        }
+        scroller.targetPosition = p
+        lm().startSmoothScroll(scroller)
+    }
+
+    private fun turnPage(delta: Int) {
+        val count = list.adapter?.itemCount ?: 0
+        if (count == 0) return
+        val cur = currentPage()
+        val t = (cur + delta).coerceIn(0, count - 1)
+        if (t != cur) smoothToPage(t)
+    }
+
+    private fun savePage() {
+        if (!rememberPage || currentUri == null || pendingPage >= 0) return
+        if ((list.adapter?.itemCount ?: 0) == 0) return
+        getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt(currentKey, currentPage()).apply()
+    }
+
+    private fun docKey(uri: Uri): String {
+        var name: String? = null
+        var size = -1L
+        try {
+            contentResolver.query(uri, null, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    val si = c.getColumnIndex(OpenableColumns.SIZE)
+                    if (ni >= 0) name = c.getString(ni)
+                    if (si >= 0 && !c.isNull(si)) size = c.getLong(si)
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return "pg_" + (name ?: uri.toString()) + "|" + size
+    }
+
+    // ------------------------------------------------------------------ links
+
+    private fun openTarget(id: Int, targets: List<LinkTarget>) {
+        lastLinkTap = SystemClock.uptimeMillis()
+        val t = targets.getOrNull(id) ?: return
+        val uri = t.uri
+        if (uri != null) openUrl(uri) else goToPage(t.page)
+    }
+
+    private fun goToPage(n: Int) {
+        val count = list.adapter?.itemCount ?: 0
+        if (n < 0 || n >= count) {
+            Toast.makeText(this, "Essa página ainda não foi carregada.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        backStack.add(currentPage())
+        lm().scrollToPositionWithOffset(n, 0)
+    }
+
+    private fun openUrl(raw: String) {
+        val text = raw.trim()
+        val u = Uri.parse(if (text.contains(":")) text else "http://$text")
+        val scheme = u.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https" && scheme != "mailto" && scheme != "tel") {
+            Toast.makeText(this, "Link não suportado.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, u))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Nenhum aplicativo abre este link.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     // ------------------------------------------------------------------ abrir PDF
 
     private fun open(uri: Uri) {
+        savePage() // guarda a página do arquivo anterior
         currentUri = uri
+        currentKey = docKey(uri)
+        backStack.clear()
+        pendingPage = if (rememberPage)
+            getSharedPreferences("leitor", MODE_PRIVATE).getInt(currentKey, -1) else -1
         if (pagesUri != uri) {
             pages.clear()
+            reflowTargets.clear()
             pagesUri = null
             pagesComplete = false
         }
+        hScroll.scrollTo(0, 0)
         show()
     }
 
@@ -360,9 +675,12 @@ class MainActivity : AppCompatActivity() {
         if (pagesUri == uri && pagesComplete) {
             reflowAdapter.notifyDataSetChanged()
             status.text = "${pages.size} páginas · refluxo"
+            restorePending()
+            pendingPage = -1
             return
         }
         pages.clear()
+        reflowTargets.clear()
         pagesUri = uri
         pagesComplete = false
         reflowAdapter.notifyDataSetChanged()
@@ -373,21 +691,34 @@ class MainActivity : AppCompatActivity() {
                 contentResolver.openInputStream(uri)!!.use { input ->
                     PDDocument.load(input).use { doc ->
                         val total = doc.numberOfPages
-                        val stripper = PDFTextStripper().apply { sortByPosition = true }
+                        val stripper = LinkStripper().apply { sortByPosition = true }
+                        val targets = ArrayList<LinkTarget>()
                         var withText = 0
                         for (i in 1..total) {
                             if (token != loadToken) return@Thread
+                            val before = targets.size
+                            stripper.pageLinks = try {
+                                extractLinks(doc, doc.getPage(i - 1), targets)
+                            } catch (e: Exception) {
+                                emptyList()
+                            }
+                            val added = ArrayList(targets.subList(before, targets.size))
                             stripper.startPage = i
                             stripper.endPage = i
-                            val text = Reflow.reflow(stripper.getText(doc))
-                            if (text.isNotBlank()) withText++
+                            val res = Reflow.reflow(stripper.getText(doc))
+                            if (res.text.isNotBlank()) withText++
                             main.post {
                                 if (token != loadToken) return@post
-                                pages.add(text)
+                                reflowTargets.addAll(added)
+                                pages.add(PageText(res.text, res.spans))
                                 reflowAdapter.notifyItemInserted(pages.size - 1)
                                 status.text = if (i < total) "Carregando página $i de $total…"
                                 else "$total páginas · refluxo"
-                                if (i == total) pagesComplete = true
+                                restorePending()
+                                if (i == total) {
+                                    pagesComplete = true
+                                    pendingPage = -1
+                                }
                             }
                         }
                         if (withText == 0) {
@@ -411,6 +742,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showOriginal(uri: Uri, token: Int) {
         sizes.clear()
+        origLinks.clear()
+        origTargets.clear()
         imageAdapter.notifyDataSetChanged()
         status.text = "Abrindo…"
 
@@ -444,6 +777,36 @@ class MainActivity : AppCompatActivity() {
                     sizes.addAll(found)
                     imageAdapter.notifyDataSetChanged()
                     status.text = "${found.size} páginas · original"
+                    restorePending()
+                    pendingPage = -1
+                }
+
+                // depois de mostrar as páginas, lê os links (índice clicável)
+                try {
+                    contentResolver.openInputStream(uri)!!.use { input ->
+                        PDDocument.load(input).use { doc ->
+                            val targets = ArrayList<LinkTarget>()
+                            val all = ArrayList<List<PageLink>>()
+                            for (i in 0 until doc.numberOfPages) {
+                                if (token != loadToken) return@Thread
+                                all.add(
+                                    try {
+                                        extractLinks(doc, doc.getPage(i), targets)
+                                    } catch (e: Exception) {
+                                        emptyList()
+                                    }
+                                )
+                            }
+                            main.post {
+                                if (token != loadToken) return@post
+                                origTargets.clear()
+                                origTargets.addAll(targets)
+                                origLinks.clear()
+                                origLinks.addAll(all)
+                            }
+                        }
+                    }
+                } catch (_: Throwable) {
                 }
             } catch (e: Throwable) {
                 try { pr?.close() } catch (_: Throwable) {}
@@ -471,9 +834,20 @@ class MainActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------------ adaptador: refluxo
 
+    private inner class LinkSpan(val id: Int) : ClickableSpan() {
+        override fun onClick(widget: View) {
+            openTarget(id, reflowTargets)
+        }
+
+        override fun updateDrawState(ds: TextPaint) {
+            ds.color = if (night) Color.parseColor("#8FB4E8") else Color.parseColor("#1F3A5F")
+            ds.isUnderlineText = true
+        }
+    }
+
     private inner class ReflowAdapter : RecyclerView.Adapter<ReflowAdapter.VH>() {
 
-        inner class VH(val box: LinearLayout, val label: TextView, val body: TextView) :
+        inner class VH(val box: LinearLayout, val label: TextView, val body: LinkTextView) :
             RecyclerView.ViewHolder(box)
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
@@ -489,7 +863,7 @@ class MainActivity : AppCompatActivity() {
                 typeface = Typeface.DEFAULT_BOLD
                 alpha = 0.55f
             }
-            val body = TextView(parent.context).apply {
+            val body = LinkTextView(parent.context).apply {
                 typeface = Typeface.SERIF
                 setLineSpacing(0f, 1.4f)
             }
@@ -502,11 +876,36 @@ class MainActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(h: VH, position: Int) {
             val fg = if (night) Color.parseColor("#D6D3CB") else Color.parseColor("#1B1B1B")
+            val pt = pages[position]
+            val content = pt.text.ifBlank { "(página sem texto)" }
+
             h.label.setTextColor(fg)
             h.label.text = "— ${position + 1} —"
+
+            // desliga a seleção antes de trocar o texto (evita falhas ao reciclar)
+            h.body.setTextIsSelectable(false)
             h.body.setTextColor(fg)
             h.body.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp)
-            h.body.text = pages[position].ifBlank { "(página sem texto)" }
+            if (pt.spans.isEmpty()) {
+                h.body.text = content
+            } else {
+                val ss = SpannableString(content)
+                for (s in pt.spans) {
+                    if (s.start >= 0 && s.end > s.start && s.end <= content.length) {
+                        ss.setSpan(LinkSpan(s.id), s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    }
+                }
+                h.body.text = ss
+            }
+            h.body.setTextIsSelectable(true)
+        }
+
+        /** Usado durante a pinça: muda o tamanho do texto sem recarregar a lista. */
+        fun applyTextSizeToVisible() {
+            for (i in 0 until list.childCount) {
+                val box = list.getChildAt(i) as? LinearLayout ?: continue
+                (box.getChildAt(1) as? TextView)?.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp)
+            }
         }
     }
 
@@ -524,7 +923,33 @@ class MainActivity : AppCompatActivity() {
                 scaleType = ImageView.ScaleType.FIT_XY
                 layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(100))
             }
-            return ImgVH(img)
+            val holder = ImgVH(img)
+
+            // toque sobre uma área de link (índice clicável)
+            val gd = GestureDetector(img.context, object : GestureDetector.SimpleOnGestureListener() {
+                override fun onSingleTapUp(e: MotionEvent): Boolean {
+                    val pos = holder.boundPos
+                    if (pos < 0 || pos >= sizes.size || pos >= origLinks.size) return false
+                    val w = img.width
+                    val h = img.height
+                    if (w == 0 || h == 0) return false
+                    val px = e.x / w * sizes[pos][0]
+                    val py = e.y / h * sizes[pos][1]
+                    for (l in origLinks[pos]) {
+                        if (px >= l.x0 - 4f && px <= l.x1 + 4f && py >= l.y0 - 4f && py <= l.y1 + 4f) {
+                            openTarget(l.id, origTargets)
+                            return true
+                        }
+                    }
+                    return false
+                }
+            })
+            img.isClickable = true
+            img.setOnTouchListener { _, e ->
+                gd.onTouchEvent(e)
+                false
+            }
+            return holder
         }
 
         override fun getItemCount() = sizes.size
@@ -544,7 +969,7 @@ class MainActivity : AppCompatActivity() {
 
             val r = renderer ?: return
             // limita o bitmap para não estourar a memória em telas grandes com zoom
-            val renderW = minOf(targetW, 2400)
+            val renderW = minOf(targetW, RENDER_MAX_W)
             val renderH = (renderW.toLong() * sz[1] / sz[0]).toInt().coerceAtLeast(1)
 
             renderExec.execute {
