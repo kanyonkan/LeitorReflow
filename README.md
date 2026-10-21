@@ -17,6 +17,11 @@ O PDF precisa ter camada de texto. PDFs só de imagem devem passar por OCR antes
 
 Para instalar, copie o `app-debug.apk` para o celular e permita "instalar apps desconhecidos".
 
+## Como usar
+- Toque no **centro da tela** para mostrar ou esconder a barra de botões (a tela fica cheia quando a barra está escondida).
+- **Modo: Refluxo / Original**: alterna entre o texto reorganizado e as páginas como no PDF. No modo Original, A− e A+ ajustam o zoom (1x a 2x) e a tela rola para os lados quando ampliada.
+- **Noite**: no modo Original, as cores das páginas são invertidas.
+
 ## Como funciona
 - `Reflow.kt`: junta linhas em parágrafos, remove hifenização de fim de linha e números de página soltos.
 - `MainActivity.kt`: abre o PDF, extrai o texto página a página (PdfBox-Android) e mostra numa lista com rolagem.

@@ -3,6 +3,7 @@
 
     <application
         android:allowBackup="true"
+        android:largeHeap="true"
         android:icon="@mipmap/ic_launcher"
         android:label="Leitor Reflow"
         android:theme="@style/Theme.Leitor">
