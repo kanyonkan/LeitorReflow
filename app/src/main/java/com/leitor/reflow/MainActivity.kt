@@ -6,7 +6,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.util.LruCache
+import android.view.HapticFeedbackConstants
+import java.io.File
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Typeface
@@ -147,6 +153,28 @@ class LinkTextView(context: Context) : TextView(context) {
     }
 }
 
+/** Imagem da página que também desenha a marcação do texto selecionado (modo Original). */
+class PageImageView(context: Context) : ImageView(context) {
+    /** Retângulos marcados, em pontos da página (origem no canto superior esquerdo). */
+    var selRects: List<RectF> = emptyList()
+    var pageW = 0f
+    var pageH = 0f
+    private val paint = Paint().apply {
+        color = Color.argb(90, 50, 120, 255)
+        style = Paint.Style.FILL
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (selRects.isEmpty() || pageW <= 0f || pageH <= 0f) return
+        val sx = width / pageW
+        val sy = height / pageH
+        for (r in selRects) {
+            canvas.drawRect(r.left * sx, r.top * sy, r.right * sx, r.bottom * sy, paint)
+        }
+    }
+}
+
 class MainActivity : AppCompatActivity() {
 
     private companion object {
@@ -169,12 +197,37 @@ class MainActivity : AppCompatActivity() {
 
     // ---- modo original (imagem das páginas) ----
     private val sizes = ArrayList<IntArray>() // [largura, altura] de cada página
-    private val origLinks = ArrayList<List<PageLink>>()
-    private val origTargets = ArrayList<LinkTarget>()
+    private class PageInfo(val links: List<PageLink>, val targets: List<LinkTarget>)
+
+    private val pageInfo = HashMap<Int, PageInfo>() // links de cada página, lidos sob demanda
+    private val infoRequested = HashSet<Int>()
+    private val wordCache = HashMap<Int, List<Word>>() // palavras para a seleção
+    private val bmpCache = object : LruCache<String, Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 6).toInt().coerceAtLeast(8 * 1024 * 1024)
+    ) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
     private val renderExec = Executors.newSingleThreadExecutor()
     private val rendererLock = Any()
     private var renderer: PdfRenderer? = null
     private var renderFd: ParcelFileDescriptor? = null
+
+    // ---- documento PDFBox compartilhado (texto, links e seleção) ----
+    private val textExec = Executors.newSingleThreadExecutor()
+    private val docLock = Any()
+    private var sharedDoc: PDDocument? = null
+    private var sharedDocUri: Uri? = null
+
+    // ---- seleção de texto no modo original ----
+    private var selPage = -1
+    private var selWords: List<Word> = emptyList()
+    private var selA = -1
+    private var selB = -1
+    private var selDragging = false
+    private var selHolder: ImageAdapter.ImgVH? = null
+    private var selX = 0f
+    private var selY = 0f
+    private lateinit var selBar: LinearLayout
 
     // ---- estado ----
     private var currentUri: Uri? = null
@@ -257,7 +310,7 @@ class MainActivity : AppCompatActivity() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 // só no formato horizontal, modo original, com zoom: o RecyclerView está travado
                 // e a página vira só se o gesto começou na borda da página ampliada
-                if (!isBook || e1 == null || scaling || pinchedRecently) return false
+                if (!isBook || e1 == null || scaling || pinchedRecently || selDragging) return false
                 val dx = e2.x - e1.x
                 val dy = e2.y - e1.y
                 val swipe = abs(dx) > dp(80) && abs(dx) > abs(dy) * 1.5f && abs(vx) > 600f
@@ -459,6 +512,35 @@ class MainActivity : AppCompatActivity() {
         indLp.bottomMargin = dp(14)
         root.addView(pageIndicator, indLp)
 
+        // barra da seleção de texto (modo Original)
+        selBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#EE222222"))
+                cornerRadius = dp(24).toFloat()
+            }
+            visibility = View.GONE
+        }
+        val copyBtn = makeBtn("Copiar") { copySelection() }
+        val cancelBtn = makeBtn("Cancelar") { clearSelection() }
+        for (b in listOf(copyBtn, cancelBtn)) {
+            b.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(dp(4), 0, dp(4), 0) }
+            b.setPadding(dp(16), 0, dp(16), 0)
+            selBar.addView(b)
+        }
+        root.addView(
+            selBar,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            ).apply { bottomMargin = dp(60) }
+        )
+
         setContentView(root)
 
         controller = WindowCompat.getInsetsController(window, root)
@@ -473,6 +555,8 @@ class MainActivity : AppCompatActivity() {
             bar.setPadding(dp(6) + sb.left, sb.top + dp(4), dp(6) + sb.right, dp(4))
             (pageIndicator.layoutParams as FrameLayout.LayoutParams).bottomMargin = sb.bottom + dp(12)
             pageIndicator.requestLayout()
+            (selBar.layoutParams as FrameLayout.LayoutParams).bottomMargin = sb.bottom + dp(58)
+            selBar.requestLayout()
             insets
         }
 
@@ -513,6 +597,13 @@ class MainActivity : AppCompatActivity() {
         loadToken++
         closeRenderer()
         renderExec.shutdownNow()
+        textExec.execute {
+            synchronized(docLock) {
+                try { sharedDoc?.close() } catch (_: Throwable) {}
+                sharedDoc = null
+            }
+        }
+        textExec.shutdown()
     }
 
     // ------------------------------------------------------------------ interface
@@ -796,6 +887,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun open(uri: Uri) {
         savePage() // guarda a página do arquivo anterior
+        if (currentUri != uri) {
+            wordCache.clear()
+            pageInfo.clear()
+            infoRequested.clear()
+            bmpCache.evictAll()
+        }
+        clearSelection()
         currentUri = uri
         currentKey = docKey(uri)
         backStack.clear()
@@ -821,6 +919,7 @@ class MainActivity : AppCompatActivity() {
     private fun show() {
         val uri = currentUri ?: return
         val token = ++loadToken
+        clearSelection()
         closeRenderer()
         if (reflowMode) showReflow(uri, token) else showOriginal(uri, token)
     }
@@ -843,47 +942,47 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
-                contentResolver.openInputStream(uri)!!.use { input ->
-                    PDDocument.load(input).use { doc ->
-                        val total = doc.numberOfPages
-                        val stripper = LinkStripper().apply { sortByPosition = true }
-                        val targets = ArrayList<LinkTarget>()
-                        var withText = 0
-                        for (i in 1..total) {
-                            if (token != loadToken) return@Thread
-                            val before = targets.size
-                            stripper.pageLinks = try {
-                                extractLinks(doc, doc.getPage(i - 1), targets)
-                            } catch (e: Exception) {
-                                emptyList()
-                            }
-                            val added = ArrayList(targets.subList(before, targets.size))
-                            stripper.startPage = i
-                            stripper.endPage = i
-                            val res = Reflow.reflow(stripper.getText(doc))
-                            if (res.text.isNotBlank()) withText++
-                            main.post {
-                                if (token != loadToken) return@post
-                                reflowTargets.addAll(added)
-                                pages.add(PageText(res.text, res.spans))
-                                reflowAdapter.notifyItemInserted(pages.size - 1)
-                                status.text = if (i < total) "Carregando página $i de $total…"
-                                else "$total páginas · refluxo"
-                                restorePending()
-                                if (i == total) {
-                                    pagesComplete = true
-                                    pendingPage = -1
-                                }
-                                updatePageIndicator()
-                            }
+                val stripper = LinkStripper().apply { sortByPosition = true }
+                val targets = ArrayList<LinkTarget>()
+                val total = synchronized(docLock) { ensureDoc(uri).numberOfPages }
+                var withText = 0
+                for (i in 1..total) {
+                    if (token != loadToken) return@Thread
+                    val before = targets.size
+                    // o documento é compartilhado: a trava é solta a cada página
+                    val raw = synchronized(docLock) {
+                        val doc = ensureDoc(uri)
+                        val page = doc.getPage(i - 1)
+                        stripper.pageLinks = try {
+                            extractLinks(doc, page, targets)
+                        } catch (e: Exception) {
+                            emptyList()
                         }
-                        if (withText == 0) {
-                            main.post {
-                                if (token != loadToken) return@post
-                                status.text =
-                                    "Este PDF não tem texto (é só imagem). Use o modo Original ou faça o OCR."
-                            }
+                        stripper.extractPageText(doc, i, pageWidth(page))
+                    }
+                    val added = ArrayList(targets.subList(before, targets.size))
+                    val res = Reflow.reflow(raw)
+                    if (res.text.isNotBlank()) withText++
+                    main.post {
+                        if (token != loadToken) return@post
+                        reflowTargets.addAll(added)
+                        pages.add(PageText(res.text, res.spans))
+                        reflowAdapter.notifyItemInserted(pages.size - 1)
+                        status.text = if (i < total) "Carregando página $i de $total…"
+                        else "$total páginas · refluxo"
+                        restorePending()
+                        if (i == total) {
+                            pagesComplete = true
+                            pendingPage = -1
                         }
+                        updatePageIndicator()
+                    }
+                }
+                if (withText == 0) {
+                    main.post {
+                        if (token != loadToken) return@post
+                        status.text =
+                            "Este PDF não tem texto (é só imagem). Use o modo Original ou faça o OCR."
                     }
                 }
             } catch (e: Exception) {
@@ -898,9 +997,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showOriginal(uri: Uri, token: Int) {
         sizes.clear()
-        origLinks.clear()
-        origTargets.clear()
         imageAdapter.notifyDataSetChanged()
+        infoRequested.clear()
         status.text = "Abrindo…"
 
         Thread {
@@ -911,55 +1009,59 @@ class MainActivity : AppCompatActivity() {
                 fd = f
                 val r = PdfRenderer(f)
                 pr = r
-                val found = ArrayList<IntArray>()
-                for (i in 0 until r.pageCount) {
-                    if (token != loadToken) {
-                        r.close(); f.close()
-                        return@Thread
-                    }
-                    val p = r.openPage(i)
-                    found.add(intArrayOf(p.width, p.height))
-                    p.close()
-                }
+                val count = r.pageCount
+                if (count == 0) throw IllegalStateException("PDF sem páginas")
+
+                // só a primeira página é medida agora: as demais começam com o mesmo tamanho
+                // e são corrigidas em segundo plano (assim a leitura começa na hora)
+                val p0 = r.openPage(0)
+                val first = intArrayOf(p0.width, p0.height)
+                p0.close()
+
                 main.post {
                     if (token != loadToken) {
-                        r.close(); f.close()
+                        synchronized(rendererLock) {
+                            try { r.close() } catch (_: Throwable) {}
+                        }
+                        try { f.close() } catch (_: Throwable) {}
                         return@post
                     }
                     synchronized(rendererLock) {
                         renderer = r
                         renderFd = f
                     }
-                    sizes.addAll(found)
+                    for (i in 0 until count) sizes.add(first)
                     imageAdapter.notifyDataSetChanged()
-                    status.text = "${found.size} páginas · original"
+                    status.text = "$count páginas · original"
                     restorePending()
                     pendingPage = -1
                     updatePageIndicator()
                 }
 
-                // depois de mostrar as páginas, lê os links (índice clicável)
                 try {
-                    contentResolver.openInputStream(uri)!!.use { input ->
-                        PDDocument.load(input).use { doc ->
-                            val targets = ArrayList<LinkTarget>()
-                            val all = ArrayList<List<PageLink>>()
-                            for (i in 0 until doc.numberOfPages) {
-                                if (token != loadToken) return@Thread
-                                all.add(
-                                    try {
-                                        extractLinks(doc, doc.getPage(i), targets)
-                                    } catch (e: Exception) {
-                                        emptyList()
-                                    }
-                                )
-                            }
+                    var diffs = ArrayList<IntArray>()
+                    for (i in 1 until count) {
+                        if (token != loadToken) return@Thread
+                        var w = 0
+                        var h = 0
+                        synchronized(rendererLock) {
+                            val p = r.openPage(i)
+                            w = p.width
+                            h = p.height
+                            p.close()
+                        }
+                        if (w != first[0] || h != first[1]) diffs.add(intArrayOf(i, w, h))
+                        if (diffs.isNotEmpty() && (diffs.size >= 30 || i == count - 1)) {
+                            val batch = diffs
+                            diffs = ArrayList()
                             main.post {
                                 if (token != loadToken) return@post
-                                origTargets.clear()
-                                origTargets.addAll(targets)
-                                origLinks.clear()
-                                origLinks.addAll(all)
+                                for (d in batch) {
+                                    if (d[0] < sizes.size) {
+                                        sizes[d[0]] = intArrayOf(d[1], d[2])
+                                        imageAdapter.notifyItemChanged(d[0])
+                                    }
+                                }
                             }
                         }
                     }
@@ -975,6 +1077,232 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }.start()
+    }
+
+    // ------------------------------------------------------------------ documento compartilhado
+
+    /**
+     * Chame com [docLock]. Copia o PDF para o cache (leitura por arquivo é bem mais rápida
+     * que ler tudo para a memória) e abre o documento uma única vez para texto, links e seleção.
+     */
+    private fun ensureDoc(uri: Uri): PDDocument {
+        val d = sharedDoc
+        if (d != null && sharedDocUri == uri) return d
+        try { sharedDoc?.close() } catch (_: Throwable) {}
+        sharedDoc = null
+        sharedDocUri = null
+        val f = File(cacheDir, "atual.pdf")
+        contentResolver.openInputStream(uri)!!.use { input ->
+            f.outputStream().use { out -> input.copyTo(out, 64 * 1024) }
+        }
+        val doc = PDDocument.load(f)
+        sharedDoc = doc
+        sharedDocUri = uri
+        return doc
+    }
+
+    /** Lê os links de uma página do modo original, só quando ela aparece. */
+    private fun requestLinks(pos: Int) {
+        if (pageInfo.containsKey(pos) || !infoRequested.add(pos)) return
+        val uri = currentUri ?: return
+        val token = loadToken
+        textExec.execute {
+            val info = try {
+                synchronized(docLock) {
+                    val d = ensureDoc(uri)
+                    val t = ArrayList<LinkTarget>()
+                    val l = extractLinks(d, d.getPage(pos), t)
+                    PageInfo(l, t)
+                }
+            } catch (_: Throwable) {
+                null
+            }
+            main.post {
+                if (token == loadToken) pageInfo[pos] = info ?: PageInfo(emptyList(), emptyList())
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ seleção (modo original)
+
+    /** Palavras da página, lidas em segundo plano na primeira vez. */
+    private fun wordsFor(pos: Int, cb: (List<Word>) -> Unit) {
+        val cached = wordCache[pos]
+        if (cached != null) {
+            cb(cached)
+            return
+        }
+        val uri = currentUri ?: return
+        val token = loadToken
+        textExec.execute {
+            val words = try {
+                synchronized(docLock) {
+                    LinkStripper().extractWords(ensureDoc(uri), pos + 1)
+                }
+            } catch (_: Throwable) {
+                emptyList<Word>()
+            }
+            main.post {
+                if (token != loadToken) return@post
+                wordCache[pos] = words
+                cb(words)
+            }
+        }
+    }
+
+    private fun startSelection(h: ImageAdapter.ImgVH, x: Float, y: Float) {
+        val pos = h.boundPos
+        if (pos < 0 || pos >= sizes.size) return
+        clearSelection()
+        selDragging = true
+        selHolder = h
+        selPage = pos
+        selX = x
+        selY = y
+        h.img.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        h.root.parent?.requestDisallowInterceptTouchEvent(true)
+        wordsFor(pos) { words ->
+            if (selPage != pos) return@wordsFor
+            if (words.isEmpty()) {
+                Toast.makeText(
+                    this, "Esta página não tem texto para marcar (parece ser imagem).",
+                    Toast.LENGTH_LONG
+                ).show()
+                clearSelection()
+                return@wordsFor
+            }
+            selWords = words
+            val i = nearestWord(h, selX, selY, 50f)
+            if (i < 0) {
+                clearSelection()
+                return@wordsFor
+            }
+            selA = i
+            selB = i
+            applySelection(h)
+            if (!selDragging) selBar.visibility = View.VISIBLE
+        }
+    }
+
+    private fun dragSelection(h: ImageAdapter.ImgVH, x: Float, y: Float) {
+        selX = x
+        selY = y
+        if (selA < 0) return
+        val i = nearestWord(h, x, y, 1e6f)
+        if (i >= 0 && i != selB) {
+            selB = i
+            applySelection(h)
+        }
+    }
+
+    private fun endDrag() {
+        selDragging = false
+        if (selA >= 0) selBar.visibility = View.VISIBLE
+    }
+
+    /** Palavra mais próxima do ponto tocado (em pixels da imagem); -1 se estiver longe demais. */
+    private fun nearestWord(h: ImageAdapter.ImgVH, x: Float, y: Float, maxDist: Float): Int {
+        val pos = h.boundPos
+        if (pos != selPage || pos < 0 || pos >= sizes.size) return -1
+        val w = h.img.width
+        val hh = h.img.height
+        if (w == 0 || hh == 0) return -1
+        val px = x / w * sizes[pos][0]
+        val py = y / hh * sizes[pos][1]
+        var best = -1
+        var bd = Float.MAX_VALUE
+        for (i in selWords.indices) {
+            val wd = selWords[i]
+            val dx = maxOf(wd.x0 - px, 0f, px - wd.x1)
+            val dy = maxOf(wd.y0 - py, 0f, py - wd.y1)
+            val d = dx * dx + dy * dy * 4f // dá preferência a palavras na mesma linha
+            if (d < bd) {
+                bd = d
+                best = i
+            }
+        }
+        return if (best >= 0 && bd <= maxDist * maxDist) best else -1
+    }
+
+    private fun selectionRects(): List<RectF> {
+        if (selA < 0 || selWords.isEmpty()) return emptyList()
+        val lo = minOf(selA, selB).coerceIn(0, selWords.size - 1)
+        val hi = maxOf(selA, selB).coerceIn(0, selWords.size - 1)
+        val out = ArrayList<RectF>()
+        var cur: RectF? = null
+        for (i in lo..hi) {
+            val w = selWords[i]
+            val c = cur
+            if (c != null && abs(c.top - w.y0) < 3f && abs(c.bottom - w.y1) < 3f &&
+                w.x0 >= c.left && w.x0 - c.right < 10f
+            ) {
+                c.right = maxOf(c.right, w.x1)
+            } else {
+                val nr = RectF(w.x0, w.y0, w.x1, w.y1)
+                out.add(nr)
+                cur = nr
+            }
+        }
+        return out
+    }
+
+    private fun applySelection(h: ImageAdapter.ImgVH) {
+        val pos = h.boundPos
+        if (pos < 0 || pos >= sizes.size) return
+        h.img.pageW = sizes[pos][0].toFloat()
+        h.img.pageH = sizes[pos][1].toFloat()
+        h.img.selRects = if (pos == selPage) selectionRects() else emptyList()
+        h.img.invalidate()
+    }
+
+    private fun selectionText(): String {
+        if (selA < 0 || selWords.isEmpty()) return ""
+        val lo = minOf(selA, selB).coerceIn(0, selWords.size - 1)
+        val hi = maxOf(selA, selB).coerceIn(0, selWords.size - 1)
+        val sb = StringBuilder()
+        var prev: Word? = null
+        for (i in lo..hi) {
+            val w = selWords[i]
+            val p = prev
+            if (p != null) {
+                val newLine = abs(w.y1 - p.y1) > 3f
+                when {
+                    !newLine -> sb.append(' ')
+                    p.text.length > 1 && p.text.endsWith("-") &&
+                        w.text.firstOrNull()?.isLowerCase() == true -> sb.setLength(sb.length - 1)
+                    w.y0 - p.y1 > (p.y1 - p.y0) * 0.45f && w.y0 > p.y1 -> sb.append("\n\n")
+                    else -> sb.append(' ')
+                }
+            }
+            sb.append(w.text)
+            prev = w
+        }
+        return sb.toString()
+    }
+
+    private fun copySelection() {
+        val t = selectionText()
+        if (t.isNotBlank()) {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("Texto", t))
+            Toast.makeText(this, "Texto copiado.", Toast.LENGTH_SHORT).show()
+        }
+        clearSelection()
+    }
+
+    private fun clearSelection() {
+        val h = selHolder
+        selPage = -1
+        selA = -1
+        selB = -1
+        selWords = emptyList()
+        selDragging = false
+        selHolder = null
+        if (h != null) {
+            h.img.selRects = emptyList()
+            h.img.invalidate()
+        }
+        if (::selBar.isInitialized) selBar.visibility = View.GONE
     }
 
     private fun closeRenderer() {
@@ -1093,7 +1421,7 @@ class MainActivity : AppCompatActivity() {
 
     private inner class ImageAdapter : RecyclerView.Adapter<ImageAdapter.ImgVH>() {
 
-        inner class ImgVH(val root: View, val img: ImageView) : RecyclerView.ViewHolder(root) {
+        inner class ImgVH(val root: View, val img: PageImageView) : RecyclerView.ViewHolder(root) {
             @Volatile
             var boundPos = -1
         }
@@ -1101,7 +1429,7 @@ class MainActivity : AppCompatActivity() {
         override fun getItemViewType(position: Int): Int = if (isBook) 1 else 0
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ImgVH {
-            val img = ImageView(parent.context).apply { scaleType = ImageView.ScaleType.FIT_XY }
+            val img = PageImageView(parent.context).apply { scaleType = ImageView.ScaleType.FIT_XY }
             val rootView: View
             if (viewType == 1) {
                 // uma página por tela; com zoom, rola na vertical dentro dela
@@ -1129,17 +1457,23 @@ class MainActivity : AppCompatActivity() {
 
             // toque sobre uma área de link (índice clicável)
             val gd = GestureDetector(img.context, object : GestureDetector.SimpleOnGestureListener() {
+                override fun onLongPress(e: MotionEvent) {
+                    startSelection(holder, e.x, e.y)
+                }
+
                 override fun onSingleTapUp(e: MotionEvent): Boolean {
+                    if (selA >= 0) clearSelection() // toque fora tira a marcação
                     val pos = holder.boundPos
-                    if (pos < 0 || pos >= sizes.size || pos >= origLinks.size) return false
+                    if (pos < 0 || pos >= sizes.size) return false
+                    val info = pageInfo[pos] ?: return false
                     val w = img.width
                     val h = img.height
                     if (w == 0 || h == 0) return false
                     val px = e.x / w * sizes[pos][0]
                     val py = e.y / h * sizes[pos][1]
-                    for (l in origLinks[pos]) {
+                    for (l in info.links) {
                         if (px >= l.x0 - 4f && px <= l.x1 + 4f && py >= l.y0 - 4f && py <= l.y1 + 4f) {
-                            openTarget(l.id, origTargets)
+                            openTarget(l.id, info.targets)
                             return true
                         }
                     }
@@ -1149,7 +1483,15 @@ class MainActivity : AppCompatActivity() {
             img.isClickable = true
             img.setOnTouchListener { _, e ->
                 gd.onTouchEvent(e)
-                false
+                if (selDragging && selHolder === holder) {
+                    when (e.actionMasked) {
+                        MotionEvent.ACTION_MOVE -> dragSelection(holder, e.x, e.y)
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> endDrag()
+                    }
+                    true
+                } else {
+                    false
+                }
             }
             return holder
         }
@@ -1184,10 +1526,27 @@ class MainActivity : AppCompatActivity() {
             h.img.setImageBitmap(null)
             h.boundPos = position
 
+            // marcação de texto e links desta página
+            h.img.pageW = sz[0].toFloat()
+            h.img.pageH = sz[1].toFloat()
+            if (position == selPage) {
+                selHolder = h
+                h.img.selRects = selectionRects()
+            } else {
+                h.img.selRects = emptyList()
+            }
+            requestLinks(position)
+
             val r = renderer ?: return
             // limita o bitmap para não estourar a memória em telas grandes com zoom
             val renderW = minOf(displayW, RENDER_MAX_W)
             val renderH = (renderW.toLong() * sz[1] / sz[0]).toInt().coerceAtLeast(1)
+            val key = "$position|$renderW"
+            val hit = bmpCache.get(key)
+            if (hit != null) {
+                h.img.setImageBitmap(hit)
+                return
+            }
 
             renderExec.execute {
                 if (h.boundPos != position) return@execute
@@ -1206,12 +1565,14 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 val done = bmp ?: return@execute
+                bmpCache.put(key, done)
                 main.post { if (h.boundPos == position) h.img.setImageBitmap(done) }
             }
         }
 
         override fun onViewRecycled(h: ImgVH) {
             h.boundPos = -1
+            h.img.selRects = emptyList()
             h.img.setImageBitmap(null)
         }
     }

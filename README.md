@@ -30,6 +30,9 @@ Para instalar, copie o `app-debug.apk` para o celular e permita "instalar apps d
 - **Pinça:** feche ou abra dois dedos para dar zoom, nos dois modos. Os botões A− e A+ continuam funcionando (no modo Original, o zoom vai até 2,5x).
 - **Páginas: Vertical / Horizontal:** no modo Horizontal, cada página ocupa a tela inteira e você vira deslizando para os lados, sem animação de página virando. No modo Refluxo, uma página longa rola para baixo dentro da própria tela. No modo Original ampliado, o deslize move a página e vira ao chegar na borda.
 - **Número da página:** aparece embaixo, nos dois modos (por exemplo, 12 / 190).
+- **Copiar texto no modo Original:** pressione e segure sobre uma palavra e arraste para marcar; solte e toque em **Copiar** na barrinha que aparece embaixo (ou em **Cancelar**). Funciona em PDFs com camada de texto; em PDFs só de imagem avisa que não há texto. A marcação vale dentro de uma página por vez.
+- **Duas colunas no Refluxo:** a calha entre as colunas é detectada em cada página e o texto é lido coluna da esquerda e depois a da direita. Títulos em largura total continuam acima das colunas. Páginas de coluna única não mudam.
+- **Carregamento:** o PDF é copiado uma vez para o cache e aberto por arquivo; no modo Original a primeira página aparece na hora (as demais são medidas em segundo plano), os links são lidos só das páginas que aparecem e as páginas já desenhadas ficam em cache.
 - **Lembrar página:** reabre o arquivo na última página lida. Pode ser desligado.
 - Ao trocar entre Refluxo e Original, você continua na mesma página.
 
