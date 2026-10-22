@@ -63,6 +63,16 @@ import kotlin.math.abs
  * texto do refluxo quebra na largura da tela.
  */
 class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
+
+    /**
+     * Sem zoom lateral não há o que rolar aqui: deixa o arrasto para os lados com a lista
+     * (troca de página no formato horizontal). O HorizontalScrollView puro interceptaria o gesto.
+     */
+    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+        if (!canScrollHorizontally(1) && !canScrollHorizontally(-1)) return false
+        return super.onInterceptTouchEvent(ev)
+    }
+
     override fun measureChildWithMargins(
         child: View,
         parentWidthMeasureSpec: Int,
@@ -338,7 +348,7 @@ class MainActivity : AppCompatActivity() {
         night = prefs.getBoolean("night", false)
         textSp = prefs.getFloat("textSp", 18f)
         zoom = prefs.getFloat("zoom", 1f).coerceIn(1f, ZOOM_MAX)
-        reflowMode = prefs.getBoolean("reflow", true)
+        reflowMode = false // o app sempre começa no modo Original
         rememberPage = prefs.getBoolean("remember", true)
         // "layout2" (0 vertical, 1 horizontal) substitui o antigo "layout" (2 = horizontal)
         pageLayout = when {
@@ -600,7 +610,6 @@ class MainActivity : AppCompatActivity() {
         // guarda a página atual para continuar nela no outro modo
         if (pendingPage < 0 && (list.adapter?.itemCount ?: 0) > 0) pendingPage = currentPage()
         reflowMode = !reflowMode
-        getSharedPreferences("leitor", MODE_PRIVATE).edit().putBoolean("reflow", reflowMode).apply()
         hScroll.scrollTo(0, 0)
         applyMode()
         applyTheme()
@@ -799,6 +808,13 @@ class MainActivity : AppCompatActivity() {
             pagesComplete = false
         }
         hScroll.scrollTo(0, 0)
+        // todo arquivo abre no modo Original; a troca para Refluxo é feita pelo botão
+        if (reflowMode) {
+            reflowMode = false
+            applyMode()
+            applyTheme()
+            updateLabels()
+        }
         show()
     }
 

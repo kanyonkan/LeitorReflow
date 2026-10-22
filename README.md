@@ -19,6 +19,7 @@ Para instalar, copie o `app-debug.apk` para o celular e permita "instalar apps d
 
 ## Como usar
 - Toque no **centro da tela** para mostrar ou esconder a barra de botões (a tela fica cheia quando a barra está escondida).
+- Todo arquivo abre no modo **Original**. Para ler em refluxo, toque em **Modo**.
 - **Modo: Refluxo / Original**: alterna entre o texto reorganizado e as páginas como no PDF. No modo Original, A− e A+ ajustam o zoom (1x a 2x) e a tela rola para os lados quando ampliada.
 - **Noite**: no modo Original, as cores das páginas são invertidas.
 
