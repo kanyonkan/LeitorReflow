@@ -50,7 +50,6 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.doOnNextLayout
 import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.LinearSmoothScroller
 import androidx.recyclerview.widget.PagerSnapHelper
 import androidx.recyclerview.widget.RecyclerView
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
@@ -179,9 +178,9 @@ class MainActivity : AppCompatActivity() {
     private var textSp = 18f
     private var zoom = 1f
 
-    /** 0 = vertical contínuo, 1 = vertical + deslizar para virar, 2 = horizontal (livro) */
-    private var pageLayout = 1
-    private val isBook: Boolean get() = pageLayout == 2
+    /** 0 = vertical contínuo, 1 = horizontal (uma página por tela, como um livro) */
+    private var pageLayout = 0
+    private val isBook: Boolean get() = pageLayout == 1
 
     private var rememberPage = true
     private var barVisible = true
@@ -246,21 +245,14 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                if (pageLayout == 0 || e1 == null || scaling || pinchedRecently) return false
+                // só no formato horizontal, modo original, com zoom: o RecyclerView está travado
+                // e a página vira só se o gesto começou na borda da página ampliada
+                if (!isBook || e1 == null || scaling || pinchedRecently) return false
                 val dx = e2.x - e1.x
                 val dy = e2.y - e1.y
                 val swipe = abs(dx) > dp(80) && abs(dx) > abs(dy) * 1.5f && abs(vx) > 600f
                 if (!swipe) return false
                 val dir = if (dx < 0) 1 else -1
-                val screenW = resources.displayMetrics.widthPixels
-                if (pageLayout == 1) {
-                    // com zoom lateral no modo original, o deslize move a página em vez de virar
-                    if (!reflowMode && listWidth > screenW + 2) return false
-                    turnPage(dir)
-                    return true
-                }
-                // layout horizontal: com zoom no modo original o RecyclerView está travado;
-                // vira a página só se o gesto começou na borda da página ampliada
                 if (!reflowMode && zoom > 1f) {
                     val atEdge = if (dir > 0) !canPanRightAtDown else !canPanLeftAtDown
                     if (atEdge) {
@@ -348,9 +340,10 @@ class MainActivity : AppCompatActivity() {
         zoom = prefs.getFloat("zoom", 1f).coerceIn(1f, ZOOM_MAX)
         reflowMode = prefs.getBoolean("reflow", true)
         rememberPage = prefs.getBoolean("remember", true)
+        // "layout2" (0 vertical, 1 horizontal) substitui o antigo "layout" (2 = horizontal)
         pageLayout = when {
-            prefs.contains("layout") -> prefs.getInt("layout", 1).coerceIn(0, 2)
-            prefs.getBoolean("swipe", true) -> 1
+            prefs.contains("layout2") -> prefs.getInt("layout2", 0).coerceIn(0, 1)
+            prefs.getInt("layout", 0) == 2 -> 1
             else -> 0
         }
 
@@ -533,11 +526,7 @@ class MainActivity : AppCompatActivity() {
     private fun updateLabels() {
         modeBtn.text = if (reflowMode) "Modo: Refluxo" else "Modo: Original"
         themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
-        layoutBtn.text = when (pageLayout) {
-            0 -> "Páginas: Vertical"
-            1 -> "Vertical + deslizar ⇄"
-            else -> "Páginas: Horizontal"
-        }
+        layoutBtn.text = if (isBook) "Páginas: Horizontal" else "Páginas: Vertical"
         rememberBtn.text = if (rememberPage) "Lembrar página: Sim" else "Lembrar página: Não"
     }
 
@@ -546,6 +535,7 @@ class MainActivity : AppCompatActivity() {
         bar.visibility = if (barVisible) View.VISIBLE else View.GONE
         if (barVisible) controller.show(WindowInsetsCompat.Type.systemBars())
         else controller.hide(WindowInsetsCompat.Type.systemBars())
+        updatePageIndicator() // o número da página aparece e some junto com o menu
     }
 
     private fun changeSize(dir: Int) {
@@ -589,8 +579,8 @@ class MainActivity : AppCompatActivity() {
     private fun cyclePageLayout() {
         // guarda a página atual para continuar nela no novo formato
         if (pendingPage < 0 && (list.adapter?.itemCount ?: 0) > 0) pendingPage = currentPage()
-        pageLayout = (pageLayout + 1) % 3
-        getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt("layout", pageLayout).apply()
+        pageLayout = 1 - pageLayout
+        getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt("layout2", pageLayout).apply()
         hScroll.scrollTo(0, 0)
         applyMode()
         applyTheme()
@@ -677,7 +667,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updatePageIndicator() {
         val n = list.adapter?.itemCount ?: 0
-        if (n == 0) {
+        if (n == 0 || !barVisible) {
             pageIndicator.visibility = View.GONE
             return
         }
@@ -696,26 +686,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun smoothToPage(p: Int) {
-        val scroller = object : LinearSmoothScroller(this) {
-            override fun getVerticalSnapPreference(): Int = SNAP_TO_START
-        }
-        scroller.targetPosition = p
-        lm().startSmoothScroll(scroller)
-    }
-
+    /** Vira a página no formato horizontal (usado com zoom no modo original). */
     private fun turnPage(delta: Int) {
         val count = list.adapter?.itemCount ?: 0
         if (count == 0) return
         val cur = currentPage()
         val t = (cur + delta).coerceIn(0, count - 1)
         if (t == cur) return
-        if (isBook) {
-            lm().scrollToPositionWithOffset(t, 0)
-            hScroll.scrollTo(if (delta > 0) 0 else listWidth, 0)
-        } else {
-            smoothToPage(t)
-        }
+        lm().scrollToPositionWithOffset(t, 0)
+        hScroll.scrollTo(if (delta > 0) 0 else listWidth, 0)
     }
 
     private fun savePage() {
