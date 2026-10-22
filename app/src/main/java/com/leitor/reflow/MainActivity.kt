@@ -1,5 +1,7 @@
 package com.leitor.reflow
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
@@ -8,6 +10,7 @@ import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Build
@@ -34,10 +37,12 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -46,6 +51,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.doOnNextLayout
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.LinearSmoothScroller
+import androidx.recyclerview.widget.PagerSnapHelper
 import androidx.recyclerview.widget.RecyclerView
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -82,11 +88,24 @@ class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
     }
 }
 
+/** LinearLayoutManager que permite travar a rolagem lateral feita com o dedo. */
+class PagerLayoutManager(context: Context, orientation: Int) :
+    LinearLayoutManager(context, orientation, false) {
+    var userScrollEnabled = true
+    override fun canScrollHorizontally(): Boolean = userScrollEnabled && super.canScrollHorizontally()
+}
+
 /**
  * Texto selecionável (pressionar e arrastar para marcar e copiar) que também
  * reage ao toque simples sobre links (ClickableSpan).
+ *
+ * Se, depois de um toque longo, o Android não iniciar a seleção, chama
+ * [onLongPressNoSelection] (usado para abrir a janela de texto da página).
  */
 class LinkTextView(context: Context) : TextView(context) {
+
+    var onLongPressNoSelection: (() -> Unit)? = null
+
     private val detector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(e: MotionEvent): Boolean {
             val l = layout ?: return false
@@ -103,6 +122,13 @@ class LinkTextView(context: Context) : TextView(context) {
                 return true
             }
             return false
+        }
+
+        override fun onLongPress(e: MotionEvent) {
+            val cb = onLongPressNoSelection ?: return
+            postDelayed({
+                if (isAttachedToWindow && !hasSelection()) cb()
+            }, 450)
         }
     })
 
@@ -152,18 +178,24 @@ class MainActivity : AppCompatActivity() {
     private var night = false
     private var textSp = 18f
     private var zoom = 1f
-    private var swipePages = true
+
+    /** 0 = vertical contínuo, 1 = vertical + deslizar para virar, 2 = horizontal (livro) */
+    private var pageLayout = 1
+    private val isBook: Boolean get() = pageLayout == 2
+
     private var rememberPage = true
     private var barVisible = true
     private var loadToken = 0
     private var listWidth = 0
 
-    // ---- pinça ----
+    // ---- pinça e gestos ----
     private var scaling = false
     private var cancelSent = false
     private var pinchedRecently = false
     private var pinchFactor = 1f
     private var pinchFocusX = 0f
+    private var canPanRightAtDown = false
+    private var canPanLeftAtDown = false
 
     // ---- views ----
     private lateinit var root: FrameLayout
@@ -171,12 +203,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var list: RecyclerView
     private lateinit var bar: LinearLayout
     private lateinit var status: TextView
+    private lateinit var pageIndicator: TextView
     private lateinit var modeBtn: Button
     private lateinit var themeBtn: Button
-    private lateinit var swipeBtn: Button
+    private lateinit var layoutBtn: Button
     private lateinit var rememberBtn: Button
     private val buttons = ArrayList<Button>()
     private lateinit var controller: WindowInsetsControllerCompat
+    private val snapHelper = PagerSnapHelper()
 
     private val reflowAdapter = ReflowAdapter()
     private val imageAdapter = ImageAdapter()
@@ -212,14 +246,27 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                if (!swipePages || e1 == null || scaling || pinchedRecently) return false
-                // com zoom lateral no modo original, o deslize move a página em vez de virar
-                if (!reflowMode && listWidth > resources.displayMetrics.widthPixels + 2) return false
+                if (pageLayout == 0 || e1 == null || scaling || pinchedRecently) return false
                 val dx = e2.x - e1.x
                 val dy = e2.y - e1.y
-                if (abs(dx) > dp(80) && abs(dx) > abs(dy) * 1.5f && abs(vx) > 600f) {
-                    turnPage(if (dx < 0) 1 else -1)
+                val swipe = abs(dx) > dp(80) && abs(dx) > abs(dy) * 1.5f && abs(vx) > 600f
+                if (!swipe) return false
+                val dir = if (dx < 0) 1 else -1
+                val screenW = resources.displayMetrics.widthPixels
+                if (pageLayout == 1) {
+                    // com zoom lateral no modo original, o deslize move a página em vez de virar
+                    if (!reflowMode && listWidth > screenW + 2) return false
+                    turnPage(dir)
                     return true
+                }
+                // layout horizontal: com zoom no modo original o RecyclerView está travado;
+                // vira a página só se o gesto começou na borda da página ampliada
+                if (!reflowMode && zoom > 1f) {
+                    val atEdge = if (dir > 0) !canPanRightAtDown else !canPanLeftAtDown
+                    if (atEdge) {
+                        turnPage(dir)
+                        return true
+                    }
                 }
                 return false
             }
@@ -270,7 +317,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (ev.actionMasked == MotionEvent.ACTION_DOWN) pinchedRecently = false
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            pinchedRecently = false
+            canPanRightAtDown = hScroll.canScrollHorizontally(1)
+            canPanLeftAtDown = hScroll.canScrollHorizontally(-1)
+        }
         scaleDetector.onTouchEvent(ev)
         if (scaling) {
             // durante a pinça, o resto da tela não recebe os toques
@@ -296,8 +347,12 @@ class MainActivity : AppCompatActivity() {
         textSp = prefs.getFloat("textSp", 18f)
         zoom = prefs.getFloat("zoom", 1f).coerceIn(1f, ZOOM_MAX)
         reflowMode = prefs.getBoolean("reflow", true)
-        swipePages = prefs.getBoolean("swipe", true)
         rememberPage = prefs.getBoolean("remember", true)
+        pageLayout = when {
+            prefs.contains("layout") -> prefs.getInt("layout", 1).coerceIn(0, 2)
+            prefs.getBoolean("swipe", true) -> 1
+            else -> 0
+        }
 
         // tela cheia: o app desenha atrás das barras do sistema
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -315,11 +370,19 @@ class MainActivity : AppCompatActivity() {
         root = FrameLayout(this)
 
         list = RecyclerView(this).apply {
-            layoutManager = LinearLayoutManager(this@MainActivity)
+            layoutManager = PagerLayoutManager(this@MainActivity, LinearLayoutManager.VERTICAL)
             clipToPadding = false
-            setPadding(0, dp(30), 0, dp(30))
             setItemViewCacheSize(2)
         }
+        list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                updatePageIndicator()
+            }
+
+            override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
+                if (newState == RecyclerView.SCROLL_STATE_IDLE) updatePageIndicator()
+            }
+        })
         hScroll = FixedWidthScroll(this).apply { isHorizontalScrollBarEnabled = false }
         hScroll.addView(list, FrameLayout.LayoutParams(dp(300), ViewGroup.LayoutParams.MATCH_PARENT))
         root.addView(
@@ -348,9 +411,9 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        swipeBtn = makeBtn("") { toggleSwipe() }
+        layoutBtn = makeBtn("") { cyclePageLayout() }
         rememberBtn = makeBtn("") { toggleRemember() }
-        row2.addView(swipeBtn)
+        row2.addView(layoutBtn)
         row2.addView(rememberBtn)
         val row2Lp = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -373,6 +436,26 @@ class MainActivity : AppCompatActivity() {
                 Gravity.TOP
             )
         )
+
+        // número da página, sempre visível (inclusive com a barra escondida)
+        pageIndicator = TextView(this).apply {
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            setPadding(dp(12), dp(5), dp(12), dp(5))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#B3000000"))
+                cornerRadius = dp(14).toFloat()
+            }
+            visibility = View.GONE
+        }
+        val indLp = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        )
+        indLp.bottomMargin = dp(14)
+        root.addView(pageIndicator, indLp)
+
         setContentView(root)
 
         controller = WindowCompat.getInsetsController(window, root)
@@ -385,6 +468,8 @@ class MainActivity : AppCompatActivity() {
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
             )
             bar.setPadding(dp(6) + sb.left, sb.top + dp(4), dp(6) + sb.right, dp(4))
+            (pageIndicator.layoutParams as FrameLayout.LayoutParams).bottomMargin = sb.bottom + dp(12)
+            pageIndicator.requestLayout()
             insets
         }
 
@@ -401,7 +486,6 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        applyWidth()
         applyMode()
         applyTheme()
         updateLabels()
@@ -449,7 +533,11 @@ class MainActivity : AppCompatActivity() {
     private fun updateLabels() {
         modeBtn.text = if (reflowMode) "Modo: Refluxo" else "Modo: Original"
         themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
-        swipeBtn.text = if (swipePages) "Virar página ⇄: Sim" else "Virar página ⇄: Não"
+        layoutBtn.text = when (pageLayout) {
+            0 -> "Páginas: Vertical"
+            1 -> "Vertical + deslizar ⇄"
+            else -> "Páginas: Horizontal"
+        }
         rememberBtn.text = if (rememberPage) "Lembrar página: Sim" else "Lembrar página: Não"
     }
 
@@ -478,11 +566,12 @@ class MainActivity : AppCompatActivity() {
         getSharedPreferences("leitor", MODE_PRIVATE).edit().putFloat("zoom", zoom).apply()
 
         val ratio = zoom / old
-        val first = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
-        val topOff = lm().findViewByPosition(first)?.top ?: 0
+        val first = if (isBook) currentPage() else lm().findFirstVisibleItemPosition().coerceAtLeast(0)
+        val topOff = if (isBook) 0 else (lm().findViewByPosition(first)?.top ?: 0)
         val sx = hScroll.scrollX
 
         applyWidth()
+        lockPaging()
         imageAdapter.notifyDataSetChanged()
         lm().scrollToPositionWithOffset(first, (topOff * ratio).toInt())
         hScroll.doOnNextLayout {
@@ -497,10 +586,17 @@ class MainActivity : AppCompatActivity() {
         updateLabels()
     }
 
-    private fun toggleSwipe() {
-        swipePages = !swipePages
-        getSharedPreferences("leitor", MODE_PRIVATE).edit().putBoolean("swipe", swipePages).apply()
+    private fun cyclePageLayout() {
+        // guarda a página atual para continuar nela no novo formato
+        if (pendingPage < 0 && (list.adapter?.itemCount ?: 0) > 0) pendingPage = currentPage()
+        pageLayout = (pageLayout + 1) % 3
+        getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt("layout", pageLayout).apply()
+        hScroll.scrollTo(0, 0)
+        applyMode()
+        applyTheme()
         updateLabels()
+        restorePending()
+        updatePageIndicator()
     }
 
     private fun toggleRemember() {
@@ -522,9 +618,21 @@ class MainActivity : AppCompatActivity() {
         show()
     }
 
+    /** Monta a lista conforme o modo (refluxo/original) e o formato (vertical/horizontal). */
     private fun applyMode() {
         applyWidth()
+        val orientation = if (isBook) LinearLayoutManager.HORIZONTAL else LinearLayoutManager.VERTICAL
+        list.layoutManager = PagerLayoutManager(this, orientation)
+        snapHelper.attachToRecyclerView(if (isBook) list else null)
+        list.setPadding(0, if (isBook) 0 else dp(30), 0, if (isBook) 0 else dp(30))
         list.adapter = if (reflowMode) reflowAdapter else imageAdapter
+        lockPaging()
+    }
+
+    /** Com zoom no modo original (formato horizontal), o dedo move a página ampliada em vez de virar. */
+    private fun lockPaging() {
+        (list.layoutManager as? PagerLayoutManager)?.userScrollEnabled =
+            !(isBook && !reflowMode && zoom > 1f)
     }
 
     /** No modo original, a largura da lista vira largura da tela x zoom (rolagem lateral). */
@@ -555,11 +663,27 @@ class MainActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------------ páginas
 
-    /** Página que está na parte de cima da tela. */
+    /** Página que está na tela. */
     private fun currentPage(): Int {
+        if (isBook) {
+            val sv = snapHelper.findSnapView(lm())
+            val sp = if (sv != null) list.getChildAdapterPosition(sv) else RecyclerView.NO_POSITION
+            return if (sp != RecyclerView.NO_POSITION) sp else lm().findFirstVisibleItemPosition().coerceAtLeast(0)
+        }
         val v = list.findChildViewUnder(list.width / 2f, list.height * 0.3f)
         val p = if (v != null) list.getChildAdapterPosition(v) else RecyclerView.NO_POSITION
         return if (p != RecyclerView.NO_POSITION) p else lm().findFirstVisibleItemPosition().coerceAtLeast(0)
+    }
+
+    private fun updatePageIndicator() {
+        val n = list.adapter?.itemCount ?: 0
+        if (n == 0) {
+            pageIndicator.visibility = View.GONE
+            return
+        }
+        val p = (currentPage() + 1).coerceIn(1, n)
+        pageIndicator.text = "Página $p de $n"
+        pageIndicator.visibility = View.VISIBLE
     }
 
     private fun restorePending() {
@@ -585,7 +709,13 @@ class MainActivity : AppCompatActivity() {
         if (count == 0) return
         val cur = currentPage()
         val t = (cur + delta).coerceIn(0, count - 1)
-        if (t != cur) smoothToPage(t)
+        if (t == cur) return
+        if (isBook) {
+            lm().scrollToPositionWithOffset(t, 0)
+            hScroll.scrollTo(if (delta > 0) 0 else listWidth, 0)
+        } else {
+            smoothToPage(t)
+        }
     }
 
     private fun savePage() {
@@ -628,6 +758,7 @@ class MainActivity : AppCompatActivity() {
         }
         backStack.add(currentPage())
         lm().scrollToPositionWithOffset(n, 0)
+        hScroll.scrollTo(0, 0)
     }
 
     private fun openUrl(raw: String) {
@@ -643,6 +774,34 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Toast.makeText(this, "Nenhum aplicativo abre este link.", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    /**
+     * Janela com o texto da página, para marcar e copiar quando a seleção direta
+     * não iniciar. "Copiar página" copia tudo de uma vez.
+     */
+    private fun showTextDialog(pageIdx: Int) {
+        val pt = pages.getOrNull(pageIdx) ?: return
+        val tv = TextView(this).apply {
+            text = pt.text
+            textSize = 17f
+            typeface = Typeface.SERIF
+            setLineSpacing(0f, 1.3f)
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+            setTextIsSelectable(true)
+        }
+        val sv = ScrollView(this)
+        sv.addView(tv)
+        AlertDialog.Builder(this)
+            .setTitle("Página ${pageIdx + 1}: marque o texto")
+            .setView(sv)
+            .setPositiveButton("Fechar", null)
+            .setNeutralButton("Copiar página") { _, _ ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("Página ${pageIdx + 1}", pt.text))
+                Toast.makeText(this, "Texto da página copiado.", Toast.LENGTH_SHORT).show()
+            }
+            .show()
     }
 
     // ------------------------------------------------------------------ abrir PDF
@@ -677,6 +836,7 @@ class MainActivity : AppCompatActivity() {
             status.text = "${pages.size} páginas · refluxo"
             restorePending()
             pendingPage = -1
+            updatePageIndicator()
             return
         }
         pages.clear()
@@ -719,6 +879,7 @@ class MainActivity : AppCompatActivity() {
                                     pagesComplete = true
                                     pendingPage = -1
                                 }
+                                updatePageIndicator()
                             }
                         }
                         if (withText == 0) {
@@ -779,6 +940,7 @@ class MainActivity : AppCompatActivity() {
                     status.text = "${found.size} páginas · original"
                     restorePending()
                     pendingPage = -1
+                    updatePageIndicator()
                 }
 
                 // depois de mostrar as páginas, lê os links (índice clicável)
@@ -847,16 +1009,16 @@ class MainActivity : AppCompatActivity() {
 
     private inner class ReflowAdapter : RecyclerView.Adapter<ReflowAdapter.VH>() {
 
-        inner class VH(val box: LinearLayout, val label: TextView, val body: LinkTextView) :
-            RecyclerView.ViewHolder(box)
+        inner class VH(val root: View, val label: TextView, val body: LinkTextView) :
+            RecyclerView.ViewHolder(root)
+
+        override fun getItemViewType(position: Int): Int = if (isBook) 1 else 0
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+            val book = viewType == 1
             val box = LinearLayout(parent.context).apply {
                 orientation = LinearLayout.VERTICAL
-                layoutParams = RecyclerView.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                )
-                setPadding(dp(20), dp(14), dp(20), dp(18))
+                setPadding(dp(20), dp(if (book) 40 else 14), dp(20), dp(if (book) 70 else 18))
             }
             val label = TextView(parent.context).apply {
                 textSize = 12f
@@ -869,6 +1031,25 @@ class MainActivity : AppCompatActivity() {
             }
             box.addView(label)
             box.addView(body)
+            if (book) {
+                // uma página por tela; se o texto for maior que a tela, rola na vertical dentro dela
+                val sv = ScrollView(parent.context).apply {
+                    isVerticalScrollBarEnabled = false
+                    layoutParams = RecyclerView.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                }
+                sv.addView(
+                    box,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                )
+                return VH(sv, label, body)
+            }
+            box.layoutParams = RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
             return VH(box, label, body)
         }
 
@@ -898,13 +1079,17 @@ class MainActivity : AppCompatActivity() {
                 h.body.text = ss
             }
             h.body.setTextIsSelectable(true)
+            h.body.onLongPressNoSelection = {
+                val p = h.bindingAdapterPosition
+                if (p >= 0) showTextDialog(p)
+            }
         }
 
         /** Usado durante a pinça: muda o tamanho do texto sem recarregar a lista. */
         fun applyTextSizeToVisible() {
             for (i in 0 until list.childCount) {
-                val box = list.getChildAt(i) as? LinearLayout ?: continue
-                (box.getChildAt(1) as? TextView)?.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp)
+                val vh = list.getChildViewHolder(list.getChildAt(i)) as? VH ?: continue
+                vh.body.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp)
             }
         }
     }
@@ -913,17 +1098,39 @@ class MainActivity : AppCompatActivity() {
 
     private inner class ImageAdapter : RecyclerView.Adapter<ImageAdapter.ImgVH>() {
 
-        inner class ImgVH(val img: ImageView) : RecyclerView.ViewHolder(img) {
+        inner class ImgVH(val root: View, val img: ImageView) : RecyclerView.ViewHolder(root) {
             @Volatile
             var boundPos = -1
         }
 
+        override fun getItemViewType(position: Int): Int = if (isBook) 1 else 0
+
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ImgVH {
-            val img = ImageView(parent.context).apply {
-                scaleType = ImageView.ScaleType.FIT_XY
-                layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(100))
+            val img = ImageView(parent.context).apply { scaleType = ImageView.ScaleType.FIT_XY }
+            val rootView: View
+            if (viewType == 1) {
+                // uma página por tela; com zoom, rola na vertical dentro dela
+                val wrapper = FrameLayout(parent.context)
+                wrapper.addView(img, FrameLayout.LayoutParams(dp(100), dp(100)))
+                val sv = ScrollView(parent.context).apply {
+                    isFillViewport = true
+                    isVerticalScrollBarEnabled = false
+                    layoutParams = RecyclerView.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                }
+                sv.addView(
+                    wrapper,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                )
+                rootView = sv
+            } else {
+                img.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(100))
+                rootView = img
             }
-            val holder = ImgVH(img)
+            val holder = ImgVH(rootView, img)
 
             // toque sobre uma área de link (índice clicável)
             val gd = GestureDetector(img.context, object : GestureDetector.SimpleOnGestureListener() {
@@ -956,12 +1163,27 @@ class MainActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(h: ImgVH, position: Int) {
             val sz = sizes[position]
-            val targetW = listWidth.coerceAtLeast(1)
-            val targetH = (targetW.toLong() * sz[1] / sz[0]).toInt().coerceAtLeast(1)
+            val screenW = resources.displayMetrics.widthPixels
+            val displayW: Int
+            val displayH: Int
 
-            val lp = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, targetH)
-            lp.bottomMargin = dp(6)
-            h.img.layoutParams = lp
+            if (isBook) {
+                // a página inteira cabe na tela (zoom 1x); o zoom multiplica esse tamanho
+                val viewH = if (list.height > 0) list.height else resources.displayMetrics.heightPixels
+                val fit = minOf(screenW.toFloat() / sz[0], viewH.toFloat() / sz[1])
+                displayW = (sz[0] * fit * zoom).toInt().coerceAtLeast(1)
+                displayH = (sz[1] * fit * zoom).toInt().coerceAtLeast(1)
+                val vGrav = if (displayH < viewH) Gravity.CENTER_VERTICAL else Gravity.TOP
+                h.img.layoutParams =
+                    FrameLayout.LayoutParams(displayW, displayH, Gravity.CENTER_HORIZONTAL or vGrav)
+            } else {
+                displayW = listWidth.coerceAtLeast(1)
+                displayH = (displayW.toLong() * sz[1] / sz[0]).toInt().coerceAtLeast(1)
+                val lp = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, displayH)
+                lp.bottomMargin = dp(6)
+                h.img.layoutParams = lp
+            }
+
             h.img.colorFilter = if (night) invertFilter else null
             h.img.setBackgroundColor(if (night) Color.parseColor("#1A1A1A") else Color.WHITE)
             h.img.setImageBitmap(null)
@@ -969,7 +1191,7 @@ class MainActivity : AppCompatActivity() {
 
             val r = renderer ?: return
             // limita o bitmap para não estourar a memória em telas grandes com zoom
-            val renderW = minOf(targetW, RENDER_MAX_W)
+            val renderW = minOf(displayW, RENDER_MAX_W)
             val renderH = (renderW.toLong() * sz[1] / sz[0]).toInt().coerceAtLeast(1)
 
             renderExec.execute {

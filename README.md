@@ -23,9 +23,12 @@ Para instalar, copie o `app-debug.apk` para o celular e permita "instalar apps d
 - **Noite**: no modo Original, as cores das páginas são invertidas.
 
 - **Links e índice clicável:** toque num link do PDF para ir à página (ou abrir o endereço). O botão Voltar do Android retorna ao ponto de onde você saiu.
-- **Copiar texto:** no modo Refluxo, pressione e arraste sobre o texto para marcar e use Copiar.
+- **Copiar texto:** no modo Refluxo, pressione e segure sobre o texto para marcar e use Copiar. Se a seleção direta não iniciar, abre uma janela com o texto da página para marcar, com o botão "Copiar página".
+- **Páginas:** o botão alterna entre Vertical (rolagem contínua), Vertical + deslizar (um deslize rápido para os lados vira a página) e Horizontal (uma página por tela, deslizando para os lados, sem animação de virar). No modo Original com zoom, no formato Horizontal, o dedo move a página ampliada; para virar, encoste na borda e deslize de novo.
+- **Número da página:** aparece embaixo, nos dois modos, mesmo com a barra escondida.
 - **Pinça:** feche ou abra dois dedos para dar zoom, nos dois modos. Os botões A− e A+ continuam funcionando (no modo Original, o zoom vai até 2,5x).
-- **Virar página ⇄:** deslizar rápido para os lados muda de página (além da rolagem vertical). Pode ser desligado.
+- **Páginas: Vertical / Horizontal:** no modo Horizontal, cada página ocupa a tela inteira e você vira deslizando para os lados, sem animação de página virando. No modo Refluxo, uma página longa rola para baixo dentro da própria tela. No modo Original ampliado, o deslize move a página e vira ao chegar na borda.
+- **Número da página:** aparece embaixo, nos dois modos (por exemplo, 12 / 190).
 - **Lembrar página:** reabre o arquivo na última página lida. Pode ser desligado.
 - Ao trocar entre Refluxo e Original, você continua na mesma página.
 
