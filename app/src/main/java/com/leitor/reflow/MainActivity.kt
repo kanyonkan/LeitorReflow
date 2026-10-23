@@ -191,9 +191,11 @@ class MainActivity : AppCompatActivity() {
         const val TEXT_MAX = 40f
         const val RENDER_MAX_W = 2700
         const val MAX_HITS = 300
+        const val REFLOW_CACHE_VERSION = 1 // mude quando o método de extração mudar
     }
 
-    private class PageText(val text: String, val spans: List<Reflow.Span>)
+    private class PageText(val text: String, val spans: List<Reflow.Span>, val loaded: Boolean = true)
+    private class ReflowData(val targets: List<LinkTarget>, val pages: List<PageText>)
 
     private val main = Handler(Looper.getMainLooper())
 
@@ -991,44 +993,82 @@ class MainActivity : AppCompatActivity() {
         pagesComplete = false
         reflowAdapter.notifyDataSetChanged()
         status.text = "Abrindo…"
+        val cacheFile = reflowCacheFile(currentKey)
+        val startHint = pendingPage // página em que você está: é extraída primeiro
 
         Thread {
             try {
+                // 1) texto já extraído numa abertura anterior: abre na hora
+                val cached = readReflowCache(cacheFile)
+                if (cached != null) {
+                    main.post {
+                        if (token != loadToken) return@post
+                        reflowTargets.addAll(cached.targets)
+                        pages.addAll(cached.pages)
+                        reflowAdapter.notifyDataSetChanged()
+                        status.text = "${pages.size} páginas · refluxo"
+                        pagesComplete = true
+                        restorePending()
+                        pendingPage = -1
+                        updatePageIndicator()
+                    }
+                    return@Thread
+                }
+
+                // 2) extração: começa pela página atual e depois completa o resto
                 val stripper = LinkStripper().apply { sortByPosition = true }
                 val targets = ArrayList<LinkTarget>()
                 val total = synchronized(docLock) { ensureDoc(uri).numberOfPages }
+                val start = if (startHint in 0 until total) startHint else 0
+                main.post {
+                    if (token != loadToken) return@post
+                    for (k in 0 until total) pages.add(PageText("", emptyList(), false))
+                    reflowAdapter.notifyDataSetChanged()
+                    status.text = "Carregando… 0 de $total páginas"
+                    restorePending()
+                    updatePageIndicator()
+                }
+                val local = arrayOfNulls<PageText>(total)
                 var withText = 0
-                for (i in 1..total) {
+                var done = 0
+                for (i in (start until total) + (0 until start)) {
                     if (token != loadToken) return@Thread
                     val before = targets.size
                     // o documento é compartilhado: a trava é solta a cada página
                     val raw = synchronized(docLock) {
                         val doc = ensureDoc(uri)
-                        val page = doc.getPage(i - 1)
+                        val page = doc.getPage(i)
                         stripper.pageLinks = try {
                             extractLinks(doc, page, targets)
                         } catch (e: Exception) {
                             emptyList()
                         }
-                        stripper.extractPageText(doc, i, pageWidth(page))
+                        stripper.extractPageText(doc, i + 1, pageWidth(page))
                     }
                     val added = ArrayList(targets.subList(before, targets.size))
                     val res = Reflow.reflow(raw)
                     if (res.text.isNotBlank()) withText++
+                    val pt = PageText(res.text, res.spans)
+                    local[i] = pt
+                    done++
+                    val d = done
                     main.post {
                         if (token != loadToken) return@post
                         reflowTargets.addAll(added)
-                        pages.add(PageText(res.text, res.spans))
-                        reflowAdapter.notifyItemInserted(pages.size - 1)
-                        status.text = if (i < total) "Carregando página $i de $total…"
+                        if (i < pages.size) {
+                            pages[i] = pt
+                            reflowAdapter.notifyItemChanged(i)
+                        }
+                        status.text = if (d < total) "Carregando… $d de $total páginas"
                         else "$total páginas · refluxo"
-                        restorePending()
-                        if (i == total) {
+                        if (d == total) {
                             pagesComplete = true
                             pendingPage = -1
                         }
-                        updatePageIndicator()
                     }
+                }
+                if (local.all { it != null }) {
+                    writeReflowCache(cacheFile, targets, local.map { it!! })
                 }
                 if (withText == 0) {
                     main.post {
@@ -1045,6 +1085,95 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }.start()
+    }
+
+    // ------------------------------------------------------------------ cache do refluxo
+
+    private fun reflowCacheFile(key: String): File {
+        val dir = File(cacheDir, "reflow")
+        dir.mkdirs()
+        val name = java.security.MessageDigest.getInstance("SHA-1")
+            .digest(key.toByteArray()).joinToString("") { "%02x".format(it) }
+        return File(dir, "$name.bin")
+    }
+
+    private fun writeStr(o: java.io.DataOutputStream, s: String) {
+        val b = s.toByteArray(Charsets.UTF_8)
+        o.writeInt(b.size)
+        o.write(b)
+    }
+
+    private fun readStr(i: java.io.DataInputStream): String {
+        val b = ByteArray(i.readInt())
+        i.readFully(b)
+        return String(b, Charsets.UTF_8)
+    }
+
+    private fun writeReflowCache(f: File, targets: List<LinkTarget>, pgs: List<PageText>) {
+        try {
+            val tmp = File(f.parentFile, f.name + ".tmp")
+            java.io.DataOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(tmp))).use { o ->
+                o.writeInt(REFLOW_CACHE_VERSION)
+                o.writeInt(targets.size)
+                for (t in targets) {
+                    o.writeInt(t.page)
+                    val u = t.uri
+                    o.writeBoolean(u != null)
+                    if (u != null) writeStr(o, u)
+                }
+                o.writeInt(pgs.size)
+                for (p in pgs) {
+                    writeStr(o, p.text)
+                    o.writeInt(p.spans.size)
+                    for (sp in p.spans) {
+                        o.writeInt(sp.start)
+                        o.writeInt(sp.end)
+                        o.writeInt(sp.id)
+                    }
+                }
+            }
+            f.delete()
+            tmp.renameTo(f)
+            // mantém só os 25 arquivos mais recentes
+            f.parentFile?.listFiles { x -> x.name.endsWith(".bin") }
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(25)
+                ?.forEach { it.delete() }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun readReflowCache(f: File): ReflowData? {
+        if (!f.exists()) return null
+        return try {
+            java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(f))).use { i ->
+                if (i.readInt() != REFLOW_CACHE_VERSION) return@use null
+                val nt = i.readInt()
+                val targets = ArrayList<LinkTarget>(nt)
+                for (k in 0 until nt) {
+                    val page = i.readInt()
+                    val uri = if (i.readBoolean()) readStr(i) else null
+                    targets.add(LinkTarget(page, uri))
+                }
+                val np = i.readInt()
+                val pgs = ArrayList<PageText>(np)
+                for (k in 0 until np) {
+                    val text = readStr(i)
+                    val ns = i.readInt()
+                    val spans = ArrayList<Reflow.Span>(ns)
+                    for (m in 0 until ns) {
+                        val st = i.readInt()
+                        val en = i.readInt()
+                        val id = i.readInt()
+                        spans.add(Reflow.Span(st, en, id))
+                    }
+                    pgs.add(PageText(text, spans))
+                }
+                ReflowData(targets, pgs)
+            }
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private fun showOriginal(uri: Uri, token: Int) {
@@ -1735,7 +1864,7 @@ class MainActivity : AppCompatActivity() {
         override fun onBindViewHolder(h: VH, position: Int) {
             val fg = if (night) Color.parseColor("#D6D3CB") else Color.parseColor("#1B1B1B")
             val pt = pages[position]
-            val content = pt.text.ifBlank { "(página sem texto)" }
+            val content = if (!pt.loaded) "Carregando página…" else pt.text.ifBlank { "(página sem texto)" }
 
             h.label.setTextColor(fg)
             h.label.text = "— ${position + 1} —"
