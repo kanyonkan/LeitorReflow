@@ -30,6 +30,13 @@ import android.text.SpannableString
 import android.text.Spanned
 import android.text.TextPaint
 import android.text.style.ClickableSpan
+import android.text.style.BackgroundColorSpan
+import android.text.style.ForegroundColorSpan
+import android.text.InputType
+import android.view.inputmethod.EditorInfo
+import android.widget.CheckBox
+import android.widget.EditText
+import com.tom_roush.pdfbox.text.PDFTextStripper
 import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.Gravity
@@ -183,6 +190,7 @@ class MainActivity : AppCompatActivity() {
         const val TEXT_MIN = 12f
         const val TEXT_MAX = 40f
         const val RENDER_MAX_W = 2700
+        const val MAX_HITS = 300
     }
 
     private class PageText(val text: String, val spans: List<Reflow.Span>)
@@ -228,6 +236,21 @@ class MainActivity : AppCompatActivity() {
     private var selX = 0f
     private var selY = 0f
     private lateinit var selBar: LinearLayout
+
+    // ---- busca no documento ----
+    private class SearchHit(val page: Int, val snippet: String)
+
+    private val pageTexts = ArrayList<String>() // texto simples de cada página (espaços colapsados)
+    private val pageFolded = ArrayList<String>() // o mesmo sem acentos e em minúsculas
+    private var searchDocUri: Uri? = null
+    private var searchToken = 0
+    private var lastQuery = ""
+    private var lastAccents = true // diferenciar acentos na busca
+    private var hlAccents = true
+    private var hlPage = -1 // página com a palavra achada destacada (modo Refluxo)
+    private var hlQuery = ""
+    private val wsRegex = Regex("\\s+")
+    private val markRegex = Regex("\\p{Mn}+")
 
     // ---- estado ----
     private var currentUri: Uri? = null
@@ -462,6 +485,9 @@ class MainActivity : AppCompatActivity() {
         row1.addView(makeBtn("A+") { changeSize(+1) })
         themeBtn = makeBtn("") { toggleTheme() }
         row1.addView(themeBtn)
+        val searchBtn = makeBtn("🔍") { showSearchDialog() }
+        (searchBtn.layoutParams as LinearLayout.LayoutParams).weight = 0.6f
+        row1.addView(searchBtn)
         bar.addView(row1, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         val row2 = LinearLayout(this).apply {
@@ -516,6 +542,7 @@ class MainActivity : AppCompatActivity() {
         )
         indLp.bottomMargin = dp(14)
         root.addView(pageIndicator, indLp)
+        pageIndicator.setOnClickListener { showGoToDialog() } // toque no número: ir para a página
 
         // barra da seleção de texto (modo Original)
         selBar = LinearLayout(this).apply {
@@ -910,6 +937,11 @@ class MainActivity : AppCompatActivity() {
             pageInfo.clear()
             infoRequested.clear()
             bmpCache.evictAll()
+            pageTexts.clear()
+            pageFolded.clear()
+            searchDocUri = null
+            searchToken++
+            hlPage = -1
         }
         clearSelection()
         currentUri = uri
@@ -1138,6 +1170,284 @@ class MainActivity : AppCompatActivity() {
             main.post {
                 if (token == loadToken) pageInfo[pos] = info ?: PageInfo(emptyList(), emptyList())
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ ir para a página
+
+    private fun showGoToDialog() {
+        val n = list.adapter?.itemCount ?: 0
+        if (n == 0) return
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            hint = "1 a $n"
+            setSingleLine()
+            imeOptions = EditorInfo.IME_ACTION_GO
+        }
+        val box = FrameLayout(this).apply {
+            setPadding(dp(24), dp(8), dp(24), 0)
+            addView(input)
+        }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Ir para a página")
+            .setMessage("Digite o número da página (1 a $n)")
+            .setView(box)
+            .setPositiveButton("OK") { _, _ -> goToTyped(input.text.toString(), n) }
+            .setNegativeButton("Cancelar", null)
+            .create()
+        input.setOnEditorActionListener { _, _, _ ->
+            dlg.dismiss()
+            goToTyped(input.text.toString(), n)
+            true
+        }
+        dlg.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        dlg.show()
+        input.requestFocus()
+    }
+
+    private fun goToTyped(text: String, n: Int) {
+        val p = text.trim().toIntOrNull()
+        if (p == null || p < 1 || p > n) {
+            Toast.makeText(this, "Digite um número de 1 a $n.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        goToPage(p - 1)
+    }
+
+    // ------------------------------------------------------------------ busca
+
+    /** Sem acentos e em minúsculas, para a busca ignorar maiúsculas e acentos. */
+    private fun fold(s: String): String =
+        java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD)
+            .replace(markRegex, "").lowercase()
+
+    /** Só minúsculas (mantém os acentos), com a forma composta dos caracteres. */
+    private fun exact(s: String): String =
+        java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFC).lowercase()
+
+    private fun showSearchDialog() {
+        if (currentUri == null) {
+            Toast.makeText(this, "Abra um PDF primeiro.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val input = EditText(this).apply {
+            setSingleLine()
+            hint = "Palavra ou frase"
+            imeOptions = EditorInfo.IME_ACTION_SEARCH
+            setText(lastQuery)
+            setSelection(text.length)
+        }
+        val accentBox = CheckBox(this).apply {
+            text = "Diferenciar acentos (ação ≠ acao)"
+            isChecked = lastAccents
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(8), dp(24), 0)
+            addView(input)
+            addView(accentBox)
+        }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Buscar no documento")
+            .setView(box)
+            .setPositiveButton("Buscar") { _, _ ->
+                runSearch(input.text.toString(), accentBox.isChecked)
+            }
+            .setNegativeButton("Fechar", null)
+            .create()
+        input.setOnEditorActionListener { _, _, _ ->
+            dlg.dismiss()
+            runSearch(input.text.toString(), accentBox.isChecked)
+            true
+        }
+        dlg.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        dlg.show()
+        input.requestFocus()
+    }
+
+    /** Procura em todas as páginas (o texto de cada página fica em cache para as próximas buscas). */
+    private fun runSearch(q: String, accents: Boolean) {
+        val uri = currentUri ?: return
+        val query = q.trim().replace(wsRegex, " ")
+        if (query.isEmpty()) return
+        lastQuery = query
+        lastAccents = accents
+        val fq = if (accents) exact(query) else fold(query)
+        if (searchDocUri != uri) {
+            pageTexts.clear()
+            pageFolded.clear()
+            searchDocUri = uri
+        }
+        val my = ++searchToken
+        val snapshot = ArrayList(pageTexts)
+        val snapshotF = ArrayList(pageFolded)
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Buscando “$query”")
+            .setMessage("Preparando…")
+            .setNegativeButton("Cancelar") { _, _ -> searchToken++ }
+            .setCancelable(false)
+            .create()
+        dlg.show()
+
+        Thread {
+            try {
+                val stripper = PDFTextStripper()
+                val total = synchronized(docLock) { ensureDoc(uri).numberOfPages }
+                val hits = ArrayList<SearchHit>()
+                var batchStart = snapshot.size
+                val bt = ArrayList<String>()
+                val bf = ArrayList<String>()
+
+                fun flush() {
+                    if (bt.isEmpty()) return
+                    val start = batchStart
+                    val ct = ArrayList(bt)
+                    val cf = ArrayList(bf)
+                    batchStart += bt.size
+                    bt.clear()
+                    bf.clear()
+                    main.post {
+                        if (pageTexts.size == start && searchDocUri == uri) {
+                            pageTexts.addAll(ct)
+                            pageFolded.addAll(cf)
+                        }
+                    }
+                }
+
+                var truncated = false
+                for (i in 0 until total) {
+                    if (my != searchToken) {
+                        flush()
+                        return@Thread
+                    }
+                    val txt: String
+                    val plain: String // sem acentos (é o que fica em cache)
+                    if (i < snapshot.size) {
+                        txt = snapshot[i]
+                        plain = snapshotF[i]
+                    } else {
+                        txt = synchronized(docLock) {
+                            val d = ensureDoc(uri)
+                            stripper.setStartPage(i + 1)
+                            stripper.setEndPage(i + 1)
+                            stripper.getText(d)
+                        }.replace(wsRegex, " ").trim()
+                        plain = fold(txt)
+                        bt.add(txt)
+                        bf.add(plain)
+                        if (bt.size >= 25) flush()
+                    }
+                    val fl = if (accents) exact(txt) else plain
+                    var from = 0
+                    while (true) {
+                        val at = fl.indexOf(fq, from)
+                        if (at < 0) break
+                        val s = (at - 40).coerceAtLeast(0)
+                        val e = (at + fq.length + 60).coerceAtMost(txt.length)
+                        val snip = if (s < e) {
+                            (if (s > 0) "…" else "") + txt.substring(s, e) + (if (e < txt.length) "…" else "")
+                        } else {
+                            query
+                        }
+                        hits.add(SearchHit(i, snip))
+                        from = at + fq.length
+                        if (hits.size >= MAX_HITS) {
+                            truncated = true
+                            break
+                        }
+                    }
+                    if (i % 10 == 0) {
+                        val msg = "Página ${i + 1} de $total · ${hits.size} resultado(s)"
+                        main.post { if (my == searchToken) dlg.setMessage(msg) }
+                    }
+                    if (truncated) break
+                }
+                flush()
+                val truncatedFinal = truncated
+                main.post {
+                    if (my != searchToken) return@post
+                    dlg.dismiss()
+                    showResults(query, accents, hits, truncatedFinal)
+                }
+            } catch (e: Throwable) {
+                main.post {
+                    dlg.dismiss()
+                    Toast.makeText(this, "Não foi possível buscar neste PDF.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun showResults(query: String, accents: Boolean, hits: List<SearchHit>, truncated: Boolean) {
+        if (isFinishing) return
+        if (hits.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("Buscar")
+                .setMessage("Nenhum resultado para “$query”.\n\nPDFs só de imagem não têm texto para buscar.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+        val items = hits.map<SearchHit, CharSequence> { "Pág. ${it.page + 1}: ${it.snippet}" }.toTypedArray()
+        val title = if (truncated) "Primeiros $MAX_HITS resultados" else "${hits.size} resultado(s) para “$query”"
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setItems(items) { _, which -> openSearchResult(hits[which].page, query, accents) }
+            .setNegativeButton("Fechar", null)
+            .show()
+    }
+
+    private fun openSearchResult(page: Int, query: String, accents: Boolean) {
+        goToPage(page)
+        if (reflowMode) {
+            hlPage = page
+            hlQuery = query
+            hlAccents = accents
+            if (page < pages.size) reflowAdapter.notifyItemChanged(page)
+        } else {
+            highlightInOriginal(page, query, accents)
+        }
+    }
+
+    /** Trecho do texto do refluxo que corresponde à busca (ignora acentos e maiúsculas). */
+    private fun hlRange(content: String): IntRange? {
+        if (hlQuery.isBlank()) return null
+        val key: (String) -> String = if (hlAccents) { t: String -> exact(t) } else { t: String -> fold(t) }
+        val toks = key(hlQuery).trim().split(wsRegex).filter { it.isNotEmpty() }
+        if (toks.isEmpty()) return null
+        val f = key(content)
+        val fc = if (f.length == content.length) f else content.lowercase()
+        val m = Regex(toks.joinToString("\\s+") { Regex.escape(it) }).find(fc) ?: return null
+        return m.range
+    }
+
+    /** No modo Original, marca a primeira ocorrência na página (some ao tocar na tela). */
+    private fun highlightInOriginal(pos: Int, query: String, accents: Boolean) {
+        val key: (String) -> String = if (accents) { t: String -> exact(t) } else { t: String -> fold(t) }
+        wordsFor(pos) { words ->
+            val fq = key(query).trim()
+            if (fq.isEmpty() || words.isEmpty()) return@wordsFor
+            val sb = StringBuilder()
+            val starts = IntArray(words.size)
+            for (i in words.indices) {
+                if (i > 0) sb.append(' ')
+                starts[i] = sb.length
+                sb.append(key(words[i].text))
+            }
+            val at = sb.indexOf(fq)
+            if (at < 0) return@wordsFor
+            var a = 0
+            var b = 0
+            for (i in words.indices) {
+                if (starts[i] <= at) a = i
+                if (starts[i] <= at + fq.length - 1) b = i
+            }
+            clearSelection()
+            selPage = pos
+            selWords = words
+            selA = a
+            selB = b
+            imageAdapter.notifyItemChanged(pos)
         }
     }
 
@@ -1408,7 +1718,8 @@ class MainActivity : AppCompatActivity() {
             h.body.setTextIsSelectable(false)
             h.body.setTextColor(fg)
             h.body.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp)
-            if (pt.spans.isEmpty()) {
+            val hl = if (position == hlPage) hlRange(content) else null
+            if (pt.spans.isEmpty() && hl == null) {
                 h.body.text = content
             } else {
                 val ss = SpannableString(content)
@@ -1416,6 +1727,16 @@ class MainActivity : AppCompatActivity() {
                     if (s.start >= 0 && s.end > s.start && s.end <= content.length) {
                         ss.setSpan(LinkSpan(s.id), s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     }
+                }
+                if (hl != null) {
+                    ss.setSpan(
+                        BackgroundColorSpan(Color.argb(200, 255, 214, 0)),
+                        hl.first, hl.last + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                    )
+                    ss.setSpan(
+                        ForegroundColorSpan(Color.BLACK),
+                        hl.first, hl.last + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                    )
                 }
                 h.body.text = ss
             }
