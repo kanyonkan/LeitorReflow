@@ -154,7 +154,37 @@ class LinkTextView(context: Context) : TextView(context) {
         }
     })
 
+    // O Android marca a palavra com dois toques rápidos. Aqui o segundo toque de um duplo toque
+    // é engolido: a palavra só é marcada ao tocar e segurar. (O duplo toque continua chegando
+    // à Activity, que usa o gesto para alternar entre Original e Refluxo.)
+    private var lastTapUp = 0L
+    private var lastTapX = 0f
+    private var lastTapY = 0f
+    private var swallow = false
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val dt = event.eventTime - lastTapUp
+                swallow = dt in 1..android.view.ViewConfiguration.getDoubleTapTimeout().toLong() &&
+                    abs(event.x - lastTapX) < 120f && abs(event.y - lastTapY) < 120f
+            }
+            MotionEvent.ACTION_UP -> {
+                if (!swallow && event.eventTime - event.downTime < 400) {
+                    lastTapUp = event.eventTime
+                    lastTapX = event.x
+                    lastTapY = event.y
+                } else {
+                    lastTapUp = 0L
+                }
+            }
+        }
+        if (swallow) {
+            if (event.actionMasked == MotionEvent.ACTION_UP ||
+                event.actionMasked == MotionEvent.ACTION_CANCEL
+            ) swallow = false
+            return true
+        }
         detector.onTouchEvent(event)
         return super.onTouchEvent(event)
     }
@@ -330,6 +360,18 @@ class MainActivity : AppCompatActivity() {
                 val h = root.height
                 if (e.x > w * 0.25f && e.x < w * 0.75f && e.y > h * 0.25f && e.y < h * 0.75f) {
                     toggleBar()
+                    return true
+                }
+                return false
+            }
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                // dois toques rápidos no centro: alterna entre Original e Refluxo
+                if (currentUri == null) return false
+                val w = root.width
+                val h = root.height
+                if (e.x > w * 0.25f && e.x < w * 0.75f && e.y > h * 0.25f && e.y < h * 0.75f) {
+                    toggleMode()
                     return true
                 }
                 return false
