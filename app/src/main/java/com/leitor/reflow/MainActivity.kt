@@ -362,6 +362,17 @@ class MainActivity : AppCompatActivity() {
                     toggleBar()
                     return true
                 }
+                // toque perto da borda direita (na faixa do meio): próxima página; esquerda: anterior
+                if (e.y > h * 0.25f && e.y < h * 0.75f) {
+                    if (e.x >= w * 0.75f) {
+                        pageStep(+1)
+                        return true
+                    }
+                    if (e.x <= w * 0.25f) {
+                        pageStep(-1)
+                        return true
+                    }
+                }
                 return false
             }
 
@@ -873,6 +884,17 @@ class MainActivity : AppCompatActivity() {
             pendingPage = -1
             lm().scrollToPositionWithOffset(p, 0)
         }
+    }
+
+    /** Toque na borda: vai para a página seguinte (+1) ou anterior (-1), em qualquer modo e formato. */
+    private fun pageStep(delta: Int) {
+        val count = list.adapter?.itemCount ?: 0
+        if (count == 0) return
+        val cur = currentPage()
+        val t = (cur + delta).coerceIn(0, count - 1)
+        if (t == cur) return
+        lm().scrollToPositionWithOffset(t, 0)
+        if (isBook) hScroll.scrollTo(0, 0)
     }
 
     /** Vira a página no formato horizontal (usado com zoom no modo original). */

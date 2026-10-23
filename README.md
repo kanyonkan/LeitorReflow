@@ -20,6 +20,7 @@ Para instalar, copie o `app-debug.apk` para o celular e permita "instalar apps d
 ## Como usar
 - Toque no **centro da tela** para mostrar ou esconder a barra de botões (a tela fica cheia quando a barra está escondida).
 - **Marcar texto só com toque longo:** nos dois modos, a palavra só é marcada ao tocar e segurar sobre ela (dois toques rápidos não marcam mais).
+- **Toque na borda:** um toque perto da borda direita (na altura do meio da tela) vai para a próxima página; perto da borda esquerda, volta uma página. Vale nos dois modos e nos dois formatos de página.
 - **Dois toques rápidos no centro da tela** alternam entre Original e Refluxo (o toque único continua mostrando/escondendo o menu).
 - Todo arquivo abre no modo **Original**. Para ler em refluxo, toque em **Modo**.
 - **Modo: Refluxo / Original**: alterna entre o texto reorganizado e as páginas como no PDF. No modo Original, A− e A+ ajustam o zoom (1x a 2x) e a tela rola para os lados quando ampliada.
