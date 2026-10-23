@@ -232,6 +232,7 @@ class MainActivity : AppCompatActivity() {
     // ---- estado ----
     private var currentUri: Uri? = null
     private var currentKey = ""
+    private var currentName = ""
     private var pendingPage = -1
     private val backStack = ArrayList<Int>()
     private var lastLinkTap = 0L
@@ -497,6 +498,10 @@ class MainActivity : AppCompatActivity() {
         pageIndicator = TextView(this).apply {
             textSize = 13f
             setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            maxWidth = (resources.displayMetrics.widthPixels * 0.9f).toInt()
             setPadding(dp(12), dp(5), dp(12), dp(5))
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#B3000000"))
@@ -772,7 +777,18 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val p = (currentPage() + 1).coerceIn(1, n)
-        pageIndicator.text = "Página $p de $n"
+        val line1 = "Página $p de $n"
+        if (currentName.isBlank()) {
+            pageIndicator.text = line1
+        } else {
+            // nome do arquivo em letras menores, abaixo do número da página
+            val ss = SpannableString("$line1\n$currentName")
+            ss.setSpan(
+                android.text.style.RelativeSizeSpan(0.8f), line1.length + 1, ss.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            pageIndicator.text = ss
+        }
         pageIndicator.visibility = View.VISIBLE
     }
 
@@ -817,6 +833,8 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (_: Exception) {
         }
+        // nome para exibir, sem a extensão .pdf
+        currentName = (name ?: uri.lastPathSegment ?: "").replace(Regex("(?i)\\.pdf$"), "")
         return "pg_" + (name ?: uri.toString()) + "|" + size
     }
 
