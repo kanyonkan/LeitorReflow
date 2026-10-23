@@ -247,6 +247,8 @@ class MainActivity : AppCompatActivity() {
     private var lastQuery = ""
     private var lastAccents = true // diferenciar acentos na busca
     private var hlAccents = true
+    private var lastWhole = false // só palavras inteiras
+    private var hlWhole = false
     private var hlPage = -1 // página com a palavra achada destacada (modo Refluxo)
     private var hlQuery = ""
     private val wsRegex = Regex("\\s+")
@@ -1221,6 +1223,13 @@ class MainActivity : AppCompatActivity() {
         java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD)
             .replace(markRegex, "").lowercase()
 
+    /** A ocorrência em [at] não está dentro de uma palavra maior (antes e depois não há letra/dígito). */
+    private fun isWholeAt(text: String, at: Int, len: Int): Boolean {
+        val before = if (at > 0) text[at - 1] else ' '
+        val after = if (at + len < text.length) text[at + len] else ' '
+        return !before.isLetterOrDigit() && !after.isLetterOrDigit()
+    }
+
     /** Só minúsculas (mantém os acentos), com a forma composta dos caracteres. */
     private fun exact(s: String): String =
         java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFC).lowercase()
@@ -1241,23 +1250,28 @@ class MainActivity : AppCompatActivity() {
             text = "Diferenciar acentos (ação ≠ acao)"
             isChecked = lastAccents
         }
+        val wholeBox = CheckBox(this).apply {
+            text = "Palavra inteira (ação ≠ organização)"
+            isChecked = lastWhole
+        }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(24), dp(8), dp(24), 0)
             addView(input)
             addView(accentBox)
+            addView(wholeBox)
         }
         val dlg = AlertDialog.Builder(this)
             .setTitle("Buscar no documento")
             .setView(box)
             .setPositiveButton("Buscar") { _, _ ->
-                runSearch(input.text.toString(), accentBox.isChecked)
+                runSearch(input.text.toString(), accentBox.isChecked, wholeBox.isChecked)
             }
             .setNegativeButton("Fechar", null)
             .create()
         input.setOnEditorActionListener { _, _, _ ->
             dlg.dismiss()
-            runSearch(input.text.toString(), accentBox.isChecked)
+            runSearch(input.text.toString(), accentBox.isChecked, wholeBox.isChecked)
             true
         }
         dlg.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
@@ -1266,12 +1280,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Procura em todas as páginas (o texto de cada página fica em cache para as próximas buscas). */
-    private fun runSearch(q: String, accents: Boolean) {
+    private fun runSearch(q: String, accents: Boolean, whole: Boolean) {
         val uri = currentUri ?: return
         val query = q.trim().replace(wsRegex, " ")
         if (query.isEmpty()) return
         lastQuery = query
         lastAccents = accents
+        lastWhole = whole
         val fq = if (accents) exact(query) else fold(query)
         if (searchDocUri != uri) {
             pageTexts.clear()
@@ -1342,6 +1357,10 @@ class MainActivity : AppCompatActivity() {
                     while (true) {
                         val at = fl.indexOf(fq, from)
                         if (at < 0) break
+                        if (whole && !isWholeAt(fl, at, fq.length)) {
+                            from = at + 1
+                            continue
+                        }
                         val s = (at - 40).coerceAtLeast(0)
                         val e = (at + fq.length + 60).coerceAtMost(txt.length)
                         val snip = if (s < e) {
@@ -1367,7 +1386,7 @@ class MainActivity : AppCompatActivity() {
                 main.post {
                     if (my != searchToken) return@post
                     dlg.dismiss()
-                    showResults(query, accents, hits, truncatedFinal)
+                    showResults(query, accents, whole, hits, truncatedFinal)
                 }
             } catch (e: Throwable) {
                 main.post {
@@ -1378,7 +1397,9 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun showResults(query: String, accents: Boolean, hits: List<SearchHit>, truncated: Boolean) {
+    private fun showResults(
+        query: String, accents: Boolean, whole: Boolean, hits: List<SearchHit>, truncated: Boolean
+    ) {
         if (isFinishing) return
         if (hits.isEmpty()) {
             AlertDialog.Builder(this)
@@ -1392,20 +1413,21 @@ class MainActivity : AppCompatActivity() {
         val title = if (truncated) "Primeiros $MAX_HITS resultados" else "${hits.size} resultado(s) para “$query”"
         AlertDialog.Builder(this)
             .setTitle(title)
-            .setItems(items) { _, which -> openSearchResult(hits[which].page, query, accents) }
+            .setItems(items) { _, which -> openSearchResult(hits[which].page, query, accents, whole) }
             .setNegativeButton("Fechar", null)
             .show()
     }
 
-    private fun openSearchResult(page: Int, query: String, accents: Boolean) {
+    private fun openSearchResult(page: Int, query: String, accents: Boolean, whole: Boolean) {
         goToPage(page)
         if (reflowMode) {
             hlPage = page
             hlQuery = query
             hlAccents = accents
+            hlWhole = whole
             if (page < pages.size) reflowAdapter.notifyItemChanged(page)
         } else {
-            highlightInOriginal(page, query, accents)
+            highlightInOriginal(page, query, accents, whole)
         }
     }
 
@@ -1417,12 +1439,14 @@ class MainActivity : AppCompatActivity() {
         if (toks.isEmpty()) return null
         val f = key(content)
         val fc = if (f.length == content.length) f else content.lowercase()
-        val m = Regex(toks.joinToString("\\s+") { Regex.escape(it) }).find(fc) ?: return null
+        var pat = toks.joinToString("\\s+") { Regex.escape(it) }
+        if (hlWhole) pat = "(?<![\\p{L}\\p{N}])$pat(?![\\p{L}\\p{N}])"
+        val m = Regex(pat).find(fc) ?: return null
         return m.range
     }
 
     /** No modo Original, marca a primeira ocorrência na página (some ao tocar na tela). */
-    private fun highlightInOriginal(pos: Int, query: String, accents: Boolean) {
+    private fun highlightInOriginal(pos: Int, query: String, accents: Boolean, whole: Boolean) {
         val key: (String) -> String = if (accents) { t: String -> exact(t) } else { t: String -> fold(t) }
         wordsFor(pos) { words ->
             val fq = key(query).trim()
@@ -1434,7 +1458,9 @@ class MainActivity : AppCompatActivity() {
                 starts[i] = sb.length
                 sb.append(key(words[i].text))
             }
-            val at = sb.indexOf(fq)
+            var at = sb.indexOf(fq)
+            val all = sb.toString()
+            while (at >= 0 && whole && !isWholeAt(all, at, fq.length)) at = all.indexOf(fq, at + 1)
             if (at < 0) return@wordsFor
             var a = 0
             var b = 0
