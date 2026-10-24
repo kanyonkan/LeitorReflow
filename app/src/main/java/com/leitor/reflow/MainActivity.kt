@@ -35,6 +35,7 @@ import android.text.style.ForegroundColorSpan
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.widget.CheckBox
+import androidx.appcompat.widget.SwitchCompat
 import android.widget.EditText
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import android.util.TypedValue
@@ -304,6 +305,9 @@ class MainActivity : AppCompatActivity() {
     private val isBook: Boolean get() = pageLayout == 1
 
     private var rememberPage = true
+    private var keepZoom = false // novo PDF começa com o zoom/tamanho do texto da última vez
+    private var keepMode = false // ... com o modo (Original/Refluxo) da última vez
+    private var keepLayout = false // ... com o formato de páginas (Vertical/Horizontal) da última vez
     private var barVisible = true
     private var loadToken = 0
     private var listWidth = 0
@@ -327,7 +331,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var modeBtn: Button
     private lateinit var themeBtn: Button
     private lateinit var layoutBtn: Button
-    private lateinit var rememberBtn: Button
+    private lateinit var settingsBtn: Button
     private val buttons = ArrayList<Button>()
     private lateinit var controller: WindowInsetsControllerCompat
     private val snapHelper = PagerSnapHelper()
@@ -480,12 +484,16 @@ class MainActivity : AppCompatActivity() {
 
         val prefs = getSharedPreferences("leitor", MODE_PRIVATE)
         night = prefs.getBoolean("night", false)
-        textSp = prefs.getFloat("textSp", 18f)
-        zoom = prefs.getFloat("zoom", 1f).coerceIn(1f, ZOOM_MAX)
-        reflowMode = false // o app sempre começa no modo Original
+        keepZoom = prefs.getBoolean("keepZoom", false)
+        keepMode = prefs.getBoolean("keepMode", false)
+        keepLayout = prefs.getBoolean("keepLayout", false)
+        textSp = if (keepZoom) prefs.getFloat("textSp", 18f) else 18f
+        zoom = if (keepZoom) prefs.getFloat("zoom", 1f).coerceIn(1f, ZOOM_MAX) else 1f
+        reflowMode = keepMode && prefs.getBoolean("reflow", false) // sem "manter", começa no Original
         rememberPage = prefs.getBoolean("remember", true)
         // "layout2" (0 vertical, 1 horizontal) substitui o antigo "layout" (2 = horizontal)
         pageLayout = when {
+            !keepLayout -> 1 // sem "manter", sempre na horizontal
             prefs.contains("layout2") -> prefs.getInt("layout2", 0).coerceIn(0, 1)
             prefs.getInt("layout", 0) == 2 -> 1
             else -> 0
@@ -552,9 +560,9 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         layoutBtn = makeBtn("") { cyclePageLayout() }
-        rememberBtn = makeBtn("") { toggleRemember() }
+        settingsBtn = makeBtn("Configuração") { showSettings() }
         row2.addView(layoutBtn)
-        row2.addView(rememberBtn)
+        row2.addView(settingsBtn)
         val row2Lp = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         )
@@ -717,7 +725,6 @@ class MainActivity : AppCompatActivity() {
         modeBtn.text = if (reflowMode) "Modo: Refluxo" else "Modo: Original"
         themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
         layoutBtn.text = if (isBook) "Páginas: Horizontal" else "Páginas: Vertical"
-        rememberBtn.text = if (rememberPage) "Lembrar página: Sim" else "Lembrar página: Não"
     }
 
     private fun toggleBar() {
@@ -779,17 +786,59 @@ class MainActivity : AppCompatActivity() {
         updatePageIndicator()
     }
 
-    private fun toggleRemember() {
-        rememberPage = !rememberPage
-        getSharedPreferences("leitor", MODE_PRIVATE).edit().putBoolean("remember", rememberPage).apply()
-        if (rememberPage) savePage()
-        updateLabels()
+    private fun showSettings() {
+        val prefs = getSharedPreferences("leitor", MODE_PRIVATE)
+        fun row(label: String, value: Boolean, onChange: (Boolean) -> Unit): SwitchCompat =
+            SwitchCompat(this).apply {
+                textSize = 16f
+                setPadding(0, dp(10), 0, dp(10))
+                isChecked = value
+                text = "$label: ${if (value) "Sim" else "Não"}"
+                setOnCheckedChangeListener { _, c ->
+                    text = "$label: ${if (c) "Sim" else "Não"}"
+                    onChange(c)
+                }
+            }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(8), dp(24), 0)
+        }
+        box.addView(row("Lembrar página", rememberPage) { c ->
+            rememberPage = c
+            prefs.edit().putBoolean("remember", c).apply()
+            if (c) savePage()
+        })
+        box.addView(row("Manter zoom", keepZoom) { c ->
+            keepZoom = c
+            prefs.edit().putBoolean("keepZoom", c).apply()
+        })
+        box.addView(row("Manter apresentação", keepMode) { c ->
+            keepMode = c
+            prefs.edit().putBoolean("keepMode", c).apply()
+        })
+        box.addView(row("Manter deslizamento", keepLayout) { c ->
+            keepLayout = c
+            prefs.edit().putBoolean("keepLayout", c).apply()
+        })
+        box.addView(TextView(this).apply {
+            text = "Com \"Não\", cada PDF aberto começa no padrão: zoom 1x e texto no tamanho padrão " +
+                "(zoom), modo Original (apresentação) e páginas na horizontal (deslizamento)."
+            textSize = 12f
+            alpha = 0.7f
+            setPadding(0, dp(8), 0, dp(4))
+        })
+        AlertDialog.Builder(this)
+            .setTitle("Configuração")
+            .setView(box)
+            .setPositiveButton("Fechar", null)
+            .show()
     }
 
     private fun toggleMode() {
         // guarda a página atual para continuar nela no outro modo
         if (pendingPage < 0 && (list.adapter?.itemCount ?: 0) > 0) pendingPage = currentPage()
         reflowMode = !reflowMode
+        getSharedPreferences("leitor", MODE_PRIVATE).edit().putBoolean("reflow", reflowMode).apply()
         hScroll.scrollTo(0, 0)
         applyMode()
         applyTheme()
@@ -1024,9 +1073,22 @@ class MainActivity : AppCompatActivity() {
             pagesComplete = false
         }
         hScroll.scrollTo(0, 0)
-        // todo arquivo abre no modo Original; a troca para Refluxo é feita pelo botão
-        if (reflowMode) {
+        // ajustes que não são mantidos voltam ao padrão em cada PDF aberto
+        var changed = false
+        if (!keepMode && reflowMode) {
             reflowMode = false
+            changed = true
+        }
+        if (!keepLayout && pageLayout != 1) {
+            pageLayout = 1
+            changed = true
+        }
+        if (!keepZoom && (zoom != 1f || textSp != 18f)) {
+            zoom = 1f
+            textSp = 18f
+            changed = true
+        }
+        if (changed) {
             applyMode()
             applyTheme()
             updateLabels()
