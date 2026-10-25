@@ -304,7 +304,7 @@ class MainActivity : AppCompatActivity() {
     private var pageLayout = 0
     private val isBook: Boolean get() = pageLayout == 1
 
-    private var rememberPage = true
+    private var rememberPage = false
     private var keepZoom = false // novo PDF começa com o zoom/tamanho do texto da última vez
     private var keepMode = false // ... com o modo (Original/Refluxo) da última vez
     private var keepLayout = false // ... com o formato de páginas (Vertical/Horizontal) da última vez
@@ -490,7 +490,7 @@ class MainActivity : AppCompatActivity() {
         textSp = if (keepZoom) prefs.getFloat("textSp", 18f) else 18f
         zoom = if (keepZoom) prefs.getFloat("zoom", 1f).coerceIn(1f, ZOOM_MAX) else 1f
         reflowMode = keepMode && prefs.getBoolean("reflow", false) // sem "manter", começa no Original
-        rememberPage = prefs.getBoolean("remember", true)
+        rememberPage = prefs.getBoolean("remember", false)
         // "layout2" (0 vertical, 1 horizontal) substitui o antigo "layout" (2 = horizontal)
         pageLayout = when {
             !keepLayout -> 1 // sem "manter", sempre na horizontal
@@ -812,7 +812,7 @@ class MainActivity : AppCompatActivity() {
             keepZoom = c
             prefs.edit().putBoolean("keepZoom", c).apply()
         })
-        box.addView(row("Manter apresentação", keepMode) { c ->
+        box.addView(row("Manter modo", keepMode) { c ->
             keepMode = c
             prefs.edit().putBoolean("keepMode", c).apply()
         })
@@ -821,8 +821,9 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putBoolean("keepLayout", c).apply()
         })
         box.addView(TextView(this).apply {
-            text = "Com \"Não\", cada PDF aberto começa no padrão: zoom 1x e texto no tamanho padrão " +
-                "(zoom), modo Original (apresentação) e páginas na horizontal (deslizamento)."
+            text = "Com \"Não\", cada PDF aberto começa no padrão: não memoriza página, " +
+                "zoom x1 (e texto no tamanho padrão), modo de texto Original e " +
+                "deslizamento de páginas na horizontal."
             textSize = 12f
             alpha = 0.7f
             setPadding(0, dp(8), 0, dp(4))
