@@ -218,6 +218,9 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val ZOOM_MAX = 2.5f
         const val ZOOM_STEP = 0.25f
+        // região vertical onde o toque vale (fração da altura da tela): antes 0.25–0.75
+        const val TAP_TOP = 0.08f
+        const val TAP_BOTTOM = 0.92f
         const val TEXT_MIN = 12f
         const val TEXT_MAX = 40f
         const val RENDER_MAX_W = 2700
@@ -362,12 +365,12 @@ class MainActivity : AppCompatActivity() {
                 if (SystemClock.uptimeMillis() - lastLinkTap < 700) return false
                 val w = root.width
                 val h = root.height
-                if (e.x > w * 0.25f && e.x < w * 0.75f && e.y > h * 0.25f && e.y < h * 0.75f) {
+                if (e.x > w * 0.25f && e.x < w * 0.75f && e.y > h * TAP_TOP && e.y < h * TAP_BOTTOM) {
                     toggleBar()
                     return true
                 }
                 // toque perto da borda direita (na faixa do meio): próxima página; esquerda: anterior
-                if (e.y > h * 0.25f && e.y < h * 0.75f) {
+                if (e.y > h * TAP_TOP && e.y < h * TAP_BOTTOM) {
                     if (e.x >= w * 0.75f) {
                         pageStep(+1)
                         return true
@@ -385,7 +388,7 @@ class MainActivity : AppCompatActivity() {
                 if (currentUri == null) return false
                 val w = root.width
                 val h = root.height
-                if (e.x > w * 0.25f && e.x < w * 0.75f && e.y > h * 0.25f && e.y < h * 0.75f) {
+                if (e.x > w * 0.25f && e.x < w * 0.75f && e.y > h * TAP_TOP && e.y < h * TAP_BOTTOM) {
                     toggleMode()
                     return true
                 }
