@@ -218,6 +218,8 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val ZOOM_MAX = 2.5f
         const val ZOOM_STEP = 0.25f
+        // velocidade mínima (px/s) para o deslize virar a página; abaixo disso só move a página
+        const val FAST_SWIPE = 1200f
         // região vertical onde o toque vale (fração da altura da tela): antes 0.25–0.75
         const val TAP_TOP = 0.08f
         const val TAP_BOTTOM = 0.92f
@@ -323,6 +325,9 @@ class MainActivity : AppCompatActivity() {
     private var pinchFocusX = 0f
     private var canPanRightAtDown = false
     private var canPanLeftAtDown = false
+    // posição horizontal da página ao encostar o dedo e página a virar ao soltar (deslize rápido)
+    private var downScrollX = 0
+    private var turnAfterUp = 0
 
     // ---- views ----
     private lateinit var root: FrameLayout
@@ -401,15 +406,15 @@ class MainActivity : AppCompatActivity() {
                 if (!isBook || e1 == null || scaling || pinchedRecently || selDragging) return false
                 val dx = e2.x - e1.x
                 val dy = e2.y - e1.y
-                val swipe = abs(dx) > dp(80) && abs(dx) > abs(dy) * 1.5f && abs(vx) > 600f
-                if (!swipe) return false
-                val dir = if (dx < 0) 1 else -1
                 if (!reflowMode && zoom > 1f) {
-                    val atEdge = if (dir > 0) !canPanRightAtDown else !canPanLeftAtDown
-                    if (atEdge) {
-                        turnPage(dir)
-                        return true
-                    }
+                    // deslize RÁPIDO vira a página (mantendo a centralização);
+                    // deslize lento só move a página dentro da tela
+                    val fast = abs(dx) > dp(60) && abs(dx) > abs(dy) * 1.5f && abs(vx) > FAST_SWIPE
+                    if (!fast) return false
+                    val dir = if (dx < 0) 1 else -1
+                    turnAfterUp = dir
+                    turnPage(dir)
+                    return true
                 }
                 return false
             }
@@ -464,6 +469,8 @@ class MainActivity : AppCompatActivity() {
             pinchedRecently = false
             canPanRightAtDown = hScroll.canScrollHorizontally(1)
             canPanLeftAtDown = hScroll.canScrollHorizontally(-1)
+            downScrollX = hScroll.scrollX
+            turnAfterUp = 0
         }
         scaleDetector.onTouchEvent(ev)
         if (scaling) {
@@ -478,7 +485,17 @@ class MainActivity : AppCompatActivity() {
             return true
         }
         tapDetector.onTouchEvent(ev)
-        return super.dispatchTouchEvent(ev)
+        val handled = super.dispatchTouchEvent(ev)
+        if (turnAfterUp != 0 && ev.actionMasked == MotionEvent.ACTION_UP) {
+            // deslize rápido: desfaz o pequeno deslocamento do arrasto e cancela a inércia,
+            // para a próxima página entrar na mesma posição horizontal
+            turnAfterUp = 0
+            val x = downScrollX
+            hScroll.fling(0)
+            hScroll.scrollTo(x, 0)
+            hScroll.post { hScroll.scrollTo(x, 0) }
+        }
+        return handled
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
