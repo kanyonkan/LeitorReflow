@@ -947,7 +947,9 @@ class MainActivity : AppCompatActivity() {
         val t = (cur + delta).coerceIn(0, count - 1)
         if (t == cur) return
         lm().scrollToPositionWithOffset(t, 0)
-        if (isBook) hScroll.scrollTo(0, 0)
+        // modo original: mantém a centralização (deslocamento horizontal) ajustada no zoom;
+        // só no refluxo volta ao início
+        if (isBook && reflowMode) hScroll.scrollTo(0, 0)
     }
 
     /** Vira a página no formato horizontal (usado com zoom no modo original). */
@@ -958,7 +960,7 @@ class MainActivity : AppCompatActivity() {
         val t = (cur + delta).coerceIn(0, count - 1)
         if (t == cur) return
         lm().scrollToPositionWithOffset(t, 0)
-        hScroll.scrollTo(if (delta > 0) 0 else listWidth, 0)
+        // mantém a centralização (deslocamento horizontal) ajustada ao trocar de página
     }
 
     private fun savePage() {
