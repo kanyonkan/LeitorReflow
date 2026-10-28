@@ -594,7 +594,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 13f
             setPadding(dp(10), dp(6), dp(10), dp(2))
         }
-        bar.addView(status, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        // a linha de status não aparece mais no cabeçalho (o TextView existe só para o código interno)
 
         root.addView(
             bar,
@@ -1230,6 +1230,7 @@ class MainActivity : AppCompatActivity() {
                 main.post {
                     if (token != loadToken) return@post
                     status.text = "Não foi possível abrir o PDF."
+                    Toast.makeText(this@MainActivity, "Não foi possível abrir o PDF.", Toast.LENGTH_LONG).show()
                     Toast.makeText(this, e.message ?: "Erro", Toast.LENGTH_LONG).show()
                 }
             }
@@ -1403,6 +1404,7 @@ class MainActivity : AppCompatActivity() {
                 main.post {
                     if (token != loadToken) return@post
                     status.text = "Não foi possível abrir o PDF no modo Original."
+                    Toast.makeText(this@MainActivity, "Não foi possível abrir o PDF no modo Original.", Toast.LENGTH_LONG).show()
                     Toast.makeText(this, e.message ?: "Erro", Toast.LENGTH_LONG).show()
                 }
             }
