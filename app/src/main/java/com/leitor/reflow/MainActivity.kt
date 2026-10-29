@@ -328,6 +328,8 @@ class MainActivity : AppCompatActivity() {
     // posição horizontal da página ao encostar o dedo e página a virar ao soltar (deslize rápido)
     private var downScrollX = 0
     private var turnAfterUp = 0
+    // posição horizontal (centralização) do modo Original, guardada ao ir para o Refluxo
+    private var origScrollX = 0
 
     // ---- views ----
     private lateinit var root: FrameLayout
@@ -858,6 +860,7 @@ class MainActivity : AppCompatActivity() {
     private fun toggleMode() {
         // guarda a página atual para continuar nela no outro modo
         if (pendingPage < 0 && (list.adapter?.itemCount ?: 0) > 0) pendingPage = currentPage()
+        if (!reflowMode) origScrollX = hScroll.scrollX // saindo do Original: guarda a centralização
         reflowMode = !reflowMode
         getSharedPreferences("leitor", MODE_PRIVATE).edit().putBoolean("reflow", reflowMode).apply()
         hScroll.scrollTo(0, 0)
@@ -865,6 +868,11 @@ class MainActivity : AppCompatActivity() {
         applyTheme()
         updateLabels()
         show()
+        if (!reflowMode && origScrollX > 0) {
+            // voltando ao Original: devolve a centralização que estava ao sair
+            val x = origScrollX
+            hScroll.doOnNextLayout { hScroll.scrollTo(x, 0) }
+        }
     }
 
     /** Monta a lista conforme o modo (refluxo/original) e o formato (vertical/horizontal). */
@@ -1096,6 +1104,7 @@ class MainActivity : AppCompatActivity() {
             pagesComplete = false
         }
         hScroll.scrollTo(0, 0)
+        origScrollX = 0
         // ajustes que não são mantidos voltam ao padrão em cada PDF aberto
         var changed = false
         if (!keepMode && reflowMode) {
