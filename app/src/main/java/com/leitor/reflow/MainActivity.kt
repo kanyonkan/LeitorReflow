@@ -64,6 +64,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.doOnNextLayout
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.LinearSmoothScroller
 import androidx.recyclerview.widget.PagerSnapHelper
 import androidx.recyclerview.widget.RecyclerView
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
@@ -800,12 +801,15 @@ class MainActivity : AppCompatActivity() {
         if (pendingPage < 0 && (list.adapter?.itemCount ?: 0) > 0) pendingPage = currentPage()
         pageLayout = 1 - pageLayout
         getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt("layout2", pageLayout).apply()
+        // no modo Original mantém a centralização (deslocamento horizontal) ajustada no zoom
+        val keepX = if (!reflowMode) hScroll.scrollX else 0
         hScroll.scrollTo(0, 0)
         applyMode()
         applyTheme()
         updateLabels()
         restorePending()
         updatePageIndicator()
+        if (keepX > 0) hScroll.doOnNextLayout { hScroll.scrollTo(keepX, 0) }
     }
 
     private fun showSettings() {
@@ -880,7 +884,34 @@ class MainActivity : AppCompatActivity() {
         applyWidth()
         val orientation = if (isBook) LinearLayoutManager.HORIZONTAL else LinearLayoutManager.VERTICAL
         list.layoutManager = PagerLayoutManager(this, orientation)
+        list.onFlingListener = null // o PagerSnapHelper não aceita outro ouvinte já instalado
         snapHelper.attachToRecyclerView(if (isBook) list else null)
+        if (!isBook && !reflowMode) {
+            // vertical, modo Original: deslize rápido vira UMA página e para; lento só rola
+            list.onFlingListener = object : RecyclerView.OnFlingListener() {
+                override fun onFling(velocityX: Int, velocityY: Int): Boolean {
+                    if (scaling || pinchedRecently || selDragging) return false
+                    if (abs(velocityY) < FAST_SWIPE || abs(velocityY) < abs(velocityX)) return false
+                    val count = list.adapter?.itemCount ?: 0
+                    if (count == 0) return false
+                    val dir = if (velocityY > 0) 1 else -1
+                    val cur = currentPage()
+                    val v = lm().findViewByPosition(cur)
+                    val t = when {
+                        dir > 0 -> cur + 1
+                        // para trás: se o começo da página atual está acima da tela, volta ao começo dela
+                        v != null && v.top < list.paddingTop - dp(8) -> cur
+                        else -> cur - 1
+                    }.coerceIn(0, count - 1)
+                    val sc = object : LinearSmoothScroller(this@MainActivity) {
+                        override fun getVerticalSnapPreference() = SNAP_TO_START
+                    }
+                    sc.targetPosition = t
+                    lm().startSmoothScroll(sc)
+                    return true
+                }
+            }
+        }
         list.setPadding(0, if (isBook) 0 else dp(30), 0, if (isBook) 0 else dp(30))
         list.adapter = if (reflowMode) reflowAdapter else imageAdapter
         lockPaging()
