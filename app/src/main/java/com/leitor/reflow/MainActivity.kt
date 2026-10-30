@@ -224,6 +224,7 @@ class MainActivity : AppCompatActivity() {
         // região vertical onde o toque vale (fração da altura da tela): antes 0.25–0.75
         const val TAP_TOP = 0.08f
         const val TAP_BOTTOM = 0.92f
+        const val TEXT_DEFAULT = 16f // tamanho padrão do texto no Refluxo (antes 18f)
         const val TEXT_MIN = 12f
         const val TEXT_MAX = 40f
         const val RENDER_MAX_W = 2700
@@ -303,7 +304,7 @@ class MainActivity : AppCompatActivity() {
 
     private var reflowMode = true
     private var night = false
-    private var textSp = 18f
+    private var textSp = TEXT_DEFAULT
     private var zoom = 1f
 
     /** 0 = vertical contínuo, 1 = horizontal (uma página por tela, como um livro) */
@@ -311,9 +312,10 @@ class MainActivity : AppCompatActivity() {
     private val isBook: Boolean get() = pageLayout == 1
 
     private var rememberPage = false
-    private var keepZoom = false // novo PDF começa com o zoom/tamanho do texto da última vez
-    private var keepMode = false // ... com o modo (Original/Refluxo) da última vez
-    private var keepLayout = false // ... com o formato de páginas (Vertical/Horizontal) da última vez
+    private var keepZoom = false // deste PDF: lembrar zoom/tamanho do texto
+    private var keepMode = false // deste PDF: lembrar o modo (Original/Refluxo)
+    private var keepCenter = false // deste PDF: lembrar a centralização (posição horizontal)
+    private var keepLayout = false // deste PDF: lembrar o deslizamento (Vertical/Horizontal)
     private var barVisible = true
     private var loadToken = 0
     private var listWidth = 0
@@ -454,7 +456,7 @@ class MainActivity : AppCompatActivity() {
                 scaling = false
                 pinchedRecently = true
                 if (reflowMode) {
-                    getSharedPreferences("leitor", MODE_PRIVATE).edit().putFloat("textSp", textSp).apply()
+                    saveDocSettings()
                     reflowAdapter.notifyDataSetChanged()
                 } else {
                     val f = pinchFactor
@@ -507,20 +509,12 @@ class MainActivity : AppCompatActivity() {
 
         val prefs = getSharedPreferences("leitor", MODE_PRIVATE)
         night = prefs.getBoolean("night", false)
-        keepZoom = prefs.getBoolean("keepZoom", false)
-        keepMode = prefs.getBoolean("keepMode", false)
-        keepLayout = prefs.getBoolean("keepLayout", false)
-        textSp = if (keepZoom) prefs.getFloat("textSp", 18f) else 18f
-        zoom = if (keepZoom) prefs.getFloat("zoom", 1f).coerceIn(1f, ZOOM_MAX) else 1f
-        reflowMode = keepMode && prefs.getBoolean("reflow", false) // sem "manter", começa no Original
-        rememberPage = prefs.getBoolean("remember", false)
-        // "layout2" (0 vertical, 1 horizontal) substitui o antigo "layout" (2 = horizontal)
-        pageLayout = when {
-            !keepLayout -> 1 // sem "manter", sempre na horizontal
-            prefs.contains("layout2") -> prefs.getInt("layout2", 0).coerceIn(0, 1)
-            prefs.getInt("layout", 0) == 2 -> 1
-            else -> 0
-        }
+        // todo PDF novo começa no padrão; os "Lembrar..." são guardados por PDF (ver open)
+        textSp = TEXT_DEFAULT
+        zoom = 1f
+        reflowMode = false
+        pageLayout = 1
+        rememberPage = false
 
         // tela cheia: o app desenha atrás das barras do sistema
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -710,6 +704,7 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         savePage()
+        saveCenter()
     }
 
     override fun onDestroy() {
@@ -761,7 +756,7 @@ class MainActivity : AppCompatActivity() {
     private fun changeSize(dir: Int) {
         if (reflowMode) {
             textSp = (textSp + dir).coerceIn(TEXT_MIN, TEXT_MAX)
-            getSharedPreferences("leitor", MODE_PRIVATE).edit().putFloat("textSp", textSp).apply()
+            saveDocSettings()
             reflowAdapter.notifyDataSetChanged()
         } else {
             setZoom(zoom + dir * ZOOM_STEP, resources.displayMetrics.widthPixels / 2f)
@@ -773,7 +768,7 @@ class MainActivity : AppCompatActivity() {
         val old = zoom
         zoom = newZoom.coerceIn(1f, ZOOM_MAX)
         if (zoom == old) return
-        getSharedPreferences("leitor", MODE_PRIVATE).edit().putFloat("zoom", zoom).apply()
+        saveDocSettings()
 
         val ratio = zoom / old
         val first = if (isBook) currentPage() else lm().findFirstVisibleItemPosition().coerceAtLeast(0)
@@ -800,7 +795,7 @@ class MainActivity : AppCompatActivity() {
         // guarda a página atual para continuar nela no novo formato
         if (pendingPage < 0 && (list.adapter?.itemCount ?: 0) > 0) pendingPage = currentPage()
         pageLayout = 1 - pageLayout
-        getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt("layout2", pageLayout).apply()
+        saveDocSettings()
         // no modo Original mantém a centralização (deslocamento horizontal) ajustada no zoom
         val keepX = if (!reflowMode) hScroll.scrollX else 0
         hScroll.scrollTo(0, 0)
@@ -812,7 +807,34 @@ class MainActivity : AppCompatActivity() {
         if (keepX > 0) hScroll.doOnNextLayout { hScroll.scrollTo(keepX, 0) }
     }
 
+    /** Chave de ajuste deste PDF (cada PDF tem os seus). */
+    private fun dk(name: String) = "$currentKey#$name"
+
+    /** Grava os ajustes do PDF aberto que estão marcados como "Lembrar". */
+    private fun saveDocSettings() {
+        if (currentUri == null || currentKey.isEmpty()) return
+        val e = getSharedPreferences("leitor", MODE_PRIVATE).edit()
+        if (keepZoom) {
+            e.putFloat(dk("zoom"), zoom)
+            e.putFloat(dk("textSp"), textSp)
+        }
+        if (keepMode) e.putBoolean(dk("reflow"), reflowMode)
+        if (keepLayout) e.putInt(dk("layout"), pageLayout)
+        e.apply()
+    }
+
+    /** Grava a centralização (posição horizontal do modo Original) se este PDF a lembra. */
+    private fun saveCenter() {
+        if (!keepCenter || currentUri == null || currentKey.isEmpty()) return
+        val x = if (reflowMode) origScrollX else hScroll.scrollX
+        getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt(dk("scrollX"), x).apply()
+    }
+
     private fun showSettings() {
+        if (currentUri == null) {
+            Toast.makeText(this, "Abra um PDF para configurar.", Toast.LENGTH_SHORT).show()
+            return
+        }
         val prefs = getSharedPreferences("leitor", MODE_PRIVATE)
         fun row(label: String, value: Boolean, onChange: (Boolean) -> Unit): SwitchCompat =
             SwitchCompat(this).apply {
@@ -831,25 +853,34 @@ class MainActivity : AppCompatActivity() {
         }
         box.addView(row("Lembrar página", rememberPage) { c ->
             rememberPage = c
-            prefs.edit().putBoolean("remember", c).apply()
+            prefs.edit().putBoolean(dk("remP"), c).apply()
             if (c) savePage()
         })
-        box.addView(row("Manter zoom", keepZoom) { c ->
+        box.addView(row("Lembrar zoom", keepZoom) { c ->
             keepZoom = c
-            prefs.edit().putBoolean("keepZoom", c).apply()
+            prefs.edit().putBoolean(dk("remZ"), c).apply()
+            if (c) saveDocSettings()
         })
-        box.addView(row("Manter modo", keepMode) { c ->
+        box.addView(row("Lembrar modo", keepMode) { c ->
             keepMode = c
-            prefs.edit().putBoolean("keepMode", c).apply()
+            prefs.edit().putBoolean(dk("remM"), c).apply()
+            if (c) saveDocSettings()
         })
-        box.addView(row("Manter deslizamento", keepLayout) { c ->
+        box.addView(row("Lembrar deslizamento", keepLayout) { c ->
             keepLayout = c
-            prefs.edit().putBoolean("keepLayout", c).apply()
+            prefs.edit().putBoolean(dk("remL"), c).apply()
+            if (c) saveDocSettings()
+        })
+        box.addView(row("Lembrar centralização", keepCenter) { c ->
+            keepCenter = c
+            prefs.edit().putBoolean(dk("remC"), c).apply()
+            if (c) saveCenter()
         })
         box.addView(TextView(this).apply {
-            text = "Com \"Não\", cada PDF aberto começa no padrão: não memoriza página, " +
-                "zoom x1 (e texto no tamanho padrão), modo de texto Original e " +
-                "deslizamento de páginas na horizontal."
+            text = "Vale só para este PDF. Com \"Sim\", ao abrir este PDF de novo ele volta como você " +
+                "deixou. Com \"Não\", ele começa no padrão: primeira página, zoom x1 (e texto no " +
+                "tamanho padrão), modo Original, deslizamento na horizontal e página sem deslocamento lateral. PDFs novos sempre " +
+                "começam com tudo em \"Não\"."
             textSize = 12f
             alpha = 0.7f
             setPadding(0, dp(8), 0, dp(4))
@@ -866,7 +897,7 @@ class MainActivity : AppCompatActivity() {
         if (pendingPage < 0 && (list.adapter?.itemCount ?: 0) > 0) pendingPage = currentPage()
         if (!reflowMode) origScrollX = hScroll.scrollX // saindo do Original: guarda a centralização
         reflowMode = !reflowMode
-        getSharedPreferences("leitor", MODE_PRIVATE).edit().putBoolean("reflow", reflowMode).apply()
+        saveDocSettings()
         hScroll.scrollTo(0, 0)
         applyMode()
         applyTheme()
@@ -1111,6 +1142,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun open(uri: Uri) {
         savePage() // guarda a página do arquivo anterior
+        saveCenter() // ... e a centralização dele
         if (currentUri != uri) {
             wordCache.clear()
             pageInfo.clear()
@@ -1126,8 +1158,14 @@ class MainActivity : AppCompatActivity() {
         currentUri = uri
         currentKey = docKey(uri)
         backStack.clear()
-        pendingPage = if (rememberPage)
-            getSharedPreferences("leitor", MODE_PRIVATE).getInt(currentKey, -1) else -1
+        // ajustes deste PDF: cada "Lembrar" começa em Não e só vale se foi marcado neste mesmo PDF
+        val dp0 = getSharedPreferences("leitor", MODE_PRIVATE)
+        rememberPage = dp0.getBoolean(dk("remP"), false)
+        keepZoom = dp0.getBoolean(dk("remZ"), false)
+        keepMode = dp0.getBoolean(dk("remM"), false)
+        keepLayout = dp0.getBoolean(dk("remL"), false)
+        keepCenter = dp0.getBoolean(dk("remC"), false)
+        pendingPage = if (rememberPage) dp0.getInt(currentKey, -1) else -1
         if (pagesUri != uri) {
             pages.clear()
             reflowTargets.clear()
@@ -1135,28 +1173,30 @@ class MainActivity : AppCompatActivity() {
             pagesComplete = false
         }
         hScroll.scrollTo(0, 0)
-        origScrollX = 0
-        // ajustes que não são mantidos voltam ao padrão em cada PDF aberto
-        var changed = false
-        if (!keepMode && reflowMode) {
-            reflowMode = false
-            changed = true
-        }
-        if (!keepLayout && pageLayout != 1) {
-            pageLayout = 1
-            changed = true
-        }
-        if (!keepZoom && (zoom != 1f || textSp != 18f)) {
-            zoom = 1f
-            textSp = 18f
-            changed = true
-        }
+        origScrollX = if (keepCenter) dp0.getInt(dk("scrollX"), 0).coerceAtLeast(0) else 0
+        // aplica os ajustes lembrados deste PDF (ou o padrão)
+        val newReflow = keepMode && dp0.getBoolean(dk("reflow"), false)
+        val newLayout = if (keepLayout) dp0.getInt(dk("layout"), 1).coerceIn(0, 1) else 1
+        val newZoom = if (keepZoom) dp0.getFloat(dk("zoom"), 1f).coerceIn(1f, ZOOM_MAX) else 1f
+        val newText = if (keepZoom) dp0.getFloat(dk("textSp"), TEXT_DEFAULT).coerceIn(TEXT_MIN, TEXT_MAX) else TEXT_DEFAULT
+        val changed = newReflow != reflowMode || newLayout != pageLayout ||
+            newZoom != zoom || newText != textSp
+        reflowMode = newReflow
+        pageLayout = newLayout
+        zoom = newZoom
+        textSp = newText
         if (changed) {
             applyMode()
             applyTheme()
             updateLabels()
         }
         show()
+        if (!reflowMode && origScrollX > 0) {
+            // volta à centralização lembrada deste PDF
+            val x = origScrollX
+            if (changed) hScroll.doOnNextLayout { hScroll.scrollTo(x, 0) }
+            else hScroll.post { hScroll.scrollTo(x, 0) }
+        }
     }
 
     private fun show() {
