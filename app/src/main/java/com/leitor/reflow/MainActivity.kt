@@ -312,9 +312,8 @@ class MainActivity : AppCompatActivity() {
     private val isBook: Boolean get() = pageLayout == 1
 
     private var rememberPage = false
-    private var keepZoom = false // deste PDF: lembrar zoom/tamanho do texto
+    private var keepZoom = false // deste PDF: lembrar zoom/tamanho do texto e a centralização
     private var keepMode = false // deste PDF: lembrar o modo (Original/Refluxo)
-    private var keepCenter = false // deste PDF: lembrar a centralização (posição horizontal)
     private var keepLayout = false // deste PDF: lembrar o deslizamento (Vertical/Horizontal)
     private var barVisible = true
     private var loadToken = 0
@@ -577,7 +576,7 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         layoutBtn = makeBtn("") { cyclePageLayout() }
-        settingsBtn = makeBtn("Configuração") { showSettings() }
+        settingsBtn = makeBtn("Configurar PDF") { showSettings() }
         row2.addView(layoutBtn)
         row2.addView(settingsBtn)
         val row2Lp = LinearLayout.LayoutParams(
@@ -823,9 +822,9 @@ class MainActivity : AppCompatActivity() {
         e.apply()
     }
 
-    /** Grava a centralização (posição horizontal do modo Original) se este PDF a lembra. */
+    /** Grava a centralização (posição horizontal do modo Original) junto com o zoom lembrado. */
     private fun saveCenter() {
-        if (!keepCenter || currentUri == null || currentKey.isEmpty()) return
+        if (!keepZoom || currentUri == null || currentKey.isEmpty()) return
         val x = if (reflowMode) origScrollX else hScroll.scrollX
         getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt(dk("scrollX"), x).apply()
     }
@@ -859,7 +858,10 @@ class MainActivity : AppCompatActivity() {
         box.addView(row("Lembrar zoom", keepZoom) { c ->
             keepZoom = c
             prefs.edit().putBoolean(dk("remZ"), c).apply()
-            if (c) saveDocSettings()
+            if (c) {
+                saveDocSettings()
+                saveCenter() // o zoom lembrado leva junto a centralização atual
+            }
         })
         box.addView(row("Lembrar modo", keepMode) { c ->
             keepMode = c
@@ -871,22 +873,17 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putBoolean(dk("remL"), c).apply()
             if (c) saveDocSettings()
         })
-        box.addView(row("Lembrar centralização", keepCenter) { c ->
-            keepCenter = c
-            prefs.edit().putBoolean(dk("remC"), c).apply()
-            if (c) saveCenter()
-        })
         box.addView(TextView(this).apply {
             text = "Vale só para este PDF. Com \"Sim\", ao abrir este PDF de novo ele volta como você " +
                 "deixou. Com \"Não\", ele começa no padrão: primeira página, zoom x1 (e texto no " +
-                "tamanho padrão), modo Original, deslizamento na horizontal e página sem deslocamento lateral. PDFs novos sempre " +
+                "tamanho padrão) e sem centralização, modo Original e deslizamento na horizontal. PDFs novos sempre " +
                 "começam com tudo em \"Não\"."
             textSize = 12f
             alpha = 0.7f
             setPadding(0, dp(8), 0, dp(4))
         })
         AlertDialog.Builder(this)
-            .setTitle("Configuração")
+            .setTitle("Neste PDF:")
             .setView(box)
             .setPositiveButton("Fechar", null)
             .show()
@@ -1164,7 +1161,6 @@ class MainActivity : AppCompatActivity() {
         keepZoom = dp0.getBoolean(dk("remZ"), false)
         keepMode = dp0.getBoolean(dk("remM"), false)
         keepLayout = dp0.getBoolean(dk("remL"), false)
-        keepCenter = dp0.getBoolean(dk("remC"), false)
         pendingPage = if (rememberPage) dp0.getInt(currentKey, -1) else -1
         if (pagesUri != uri) {
             pages.clear()
@@ -1173,7 +1169,7 @@ class MainActivity : AppCompatActivity() {
             pagesComplete = false
         }
         hScroll.scrollTo(0, 0)
-        origScrollX = if (keepCenter) dp0.getInt(dk("scrollX"), 0).coerceAtLeast(0) else 0
+        origScrollX = if (keepZoom) dp0.getInt(dk("scrollX"), 0).coerceAtLeast(0) else 0
         // aplica os ajustes lembrados deste PDF (ou o padrão)
         val newReflow = keepMode && dp0.getBoolean(dk("reflow"), false)
         val newLayout = if (keepLayout) dp0.getInt(dk("layout"), 1).coerceIn(0, 1) else 1
