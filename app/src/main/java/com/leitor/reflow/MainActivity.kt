@@ -217,7 +217,7 @@ class PageImageView(context: Context) : ImageView(context) {
 class MainActivity : AppCompatActivity() {
 
     private companion object {
-        const val ZOOM_MAX = 2.5f
+        const val ZOOM_MAX = 3.75f // 15 níveis de 0.25 (eram 10: 2.5f)
         const val ZOOM_STEP = 0.25f
         // velocidade mínima (px/s) para o deslize virar a página; abaixo disso só move a página
         const val FAST_SWIPE = 1200f
@@ -392,6 +392,26 @@ class MainActivity : AppCompatActivity() {
                 return false
             }
 
+            // toques rápidos seguidos na borda viravam "toque duplo" e a página não trocava:
+            // guarda o lado do primeiro toque e troca uma página por toque
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                lastEdgeDir = edgeDir(e.x, e.y)
+                lastEdgeTime = SystemClock.uptimeMillis()
+                return false
+            }
+
+            override fun onDoubleTapEvent(e: MotionEvent): Boolean {
+                if (e.actionMasked != MotionEvent.ACTION_UP) return false
+                val d = edgeDir(e.x, e.y)
+                if (d == 0) return false
+                val n = if (lastEdgeDir == d && SystemClock.uptimeMillis() - lastEdgeTime < 800) 2 else 1
+                // depois do toque ser tratado (um link tocado não deve virar a página)
+                root.post {
+                    if (SystemClock.uptimeMillis() - lastLinkTap >= 700) pageStep(d * n)
+                }
+                return false
+            }
+
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 // dois toques rápidos no centro: alterna entre Original e Refluxo
                 if (currentUri == null) return false
@@ -423,6 +443,21 @@ class MainActivity : AppCompatActivity() {
                 return false
             }
         })
+    }
+
+    private var lastEdgeDir = 0
+    private var lastEdgeTime = 0L
+
+    /** +1 toque na borda direita, -1 na esquerda (faixa vertical válida), 0 fora delas. */
+    private fun edgeDir(x: Float, y: Float): Int {
+        val w = root.width
+        val h = root.height
+        if (y <= h * TAP_TOP || y >= h * TAP_BOTTOM) return 0
+        return when {
+            x >= w * 0.75f -> 1
+            x <= w * 0.25f -> -1
+            else -> 0
+        }
     }
 
     private val scaleDetector by lazy {
@@ -912,10 +947,13 @@ class MainActivity : AppCompatActivity() {
         applyWidth()
         val orientation = if (isBook) LinearLayoutManager.HORIZONTAL else LinearLayoutManager.VERTICAL
         list.layoutManager = PagerLayoutManager(this, orientation)
-        list.onFlingListener = null // o PagerSnapHelper não aceita outro ouvinte já instalado
-        snapHelper.attachToRecyclerView(if (isBook) list else null)
-        if (!isBook && !reflowMode) {
-            // vertical, modo Original: deslize rápido vira UMA página e para; lento só rola
+        // desliga o snap antes de refazer: se ele já estava ligado a esta lista, um simples
+        // "anexar de novo" não reinstala o ouvinte de fling e o deslize passaria a correr solto
+        snapHelper.attachToRecyclerView(null)
+        list.onFlingListener = null
+        if (isBook) snapHelper.attachToRecyclerView(list)
+        if (!isBook) {
+            // vertical (Original e Refluxo): deslize rápido vira UMA página e para; lento só rola
             list.onFlingListener = object : RecyclerView.OnFlingListener() {
                 override fun onFling(velocityX: Int, velocityY: Int): Boolean {
                     if (scaling || pinchedRecently || selDragging) return false
