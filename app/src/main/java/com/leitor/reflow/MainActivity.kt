@@ -8,6 +8,9 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Rect
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.Paint
 import android.graphics.RectF
 import android.util.LruCache
@@ -203,8 +206,30 @@ class PageImageView(context: Context) : ImageView(context) {
         style = Paint.Style.FILL
     }
 
+    // pedaço da página redesenhado em resolução total (só a parte visível, com zoom alto)
+    private var tile: Bitmap? = null
+    private val tileSrc = Rect()
+    private val tileDst = Rect()
+    private val tilePaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    var tileKey = ""
+
+    fun setTile(b: Bitmap?, srcW: Int, srcH: Int, dst: Rect?, key: String) {
+        tile = b
+        tileKey = key
+        if (b != null && dst != null) {
+            tileSrc.set(0, 0, srcW, srcH)
+            tileDst.set(dst)
+        }
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        val t = tile
+        if (t != null) {
+            tilePaint.colorFilter = colorFilter // mesmo filtro do modo noturno da página
+            canvas.drawBitmap(t, tileSrc, tileDst, tilePaint)
+        }
         if (selRects.isEmpty() || pageW <= 0f || pageH <= 0f) return
         val sx = width / pageW
         val sy = height / pageH
@@ -705,6 +730,8 @@ class MainActivity : AppCompatActivity() {
         )
 
         setContentView(root)
+        // rolou (a lista ou a página ampliada): redesenha o pedaço visível em resolução total
+        root.viewTreeObserver.addOnScrollChangedListener { scheduleTiles() }
 
         controller = WindowCompat.getInsetsController(window, root)
         controller.systemBarsBehavior =
@@ -976,14 +1003,7 @@ class MainActivity : AppCompatActivity() {
                     val count = list.adapter?.itemCount ?: 0
                     if (count == 0) return false
                     val dir = if (velocityY > 0) 1 else -1
-                    val cur = currentPage()
-                    val v = lm().findViewByPosition(cur)
-                    val t = when {
-                        dir > 0 -> cur + 1
-                        // para trás: se o começo da página atual está acima da tela, volta ao começo dela
-                        v != null && v.top < list.paddingTop - dp(8) -> cur
-                        else -> cur - 1
-                    }.coerceIn(0, count - 1)
+                    val t = verticalTarget(dir, count)
                     val sc = object : LinearSmoothScroller(this@MainActivity) {
                         override fun getVerticalSnapPreference() = SNAP_TO_START
                     }
@@ -1076,10 +1096,34 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Página de destino no formato vertical, contando a partir da PRIMEIRA página visível no topo
+     * (e não da que está no meio da tela, que com páginas curtas era outra e fazia pular ou não voltar).
+     * Para trás, se o começo dela já passou do topo, o primeiro passo volta ao começo dela.
+     */
+    private fun verticalTarget(delta: Int, count: Int): Int {
+        val first = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
+        val v = lm().findViewByPosition(first)
+        val partial = v != null && v.top < list.paddingTop - dp(8)
+        val t = when {
+            delta > 0 -> first + delta
+            partial -> first + delta + 1
+            else -> first + delta
+        }
+        return t.coerceIn(0, count - 1)
+    }
+
     /** Toque na borda: vai para a página seguinte (+1) ou anterior (-1), em qualquer modo e formato. */
     private fun pageStep(delta: Int) {
         val count = list.adapter?.itemCount ?: 0
         if (count == 0) return
+        if (!isBook) {
+            val first = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
+            val t = verticalTarget(delta, count)
+            if (t == first && delta > 0) return
+            lm().scrollToPositionWithOffset(t, 0)
+            return
+        }
         val cur = currentPage()
         val t = (cur + delta).coerceIn(0, count - 1)
         if (t == cur) return
@@ -2069,6 +2113,108 @@ class MainActivity : AppCompatActivity() {
         if (::selBar.isInitialized) selBar.visibility = View.GONE
     }
 
+    // ---- nitidez com zoom alto: redesenha só a parte visível na resolução total ----
+    // null = ainda não calibrado; true = a matriz do PdfRenderer age sobre a página já ajustada ao bitmap;
+    // false = a matriz age sobre a página em pontos (72 dpi). Varia entre versões do Android.
+    @Volatile
+    private var tileRelative: Boolean? = null
+    private val tileRunnable = Runnable { updateTiles() }
+
+    private fun scheduleTiles() {
+        main.removeCallbacks(tileRunnable)
+        main.postDelayed(tileRunnable, 250)
+    }
+
+    /** Descobre como esta versão do Android interpreta a matriz (chamado com a página já aberta). */
+    private fun probeRelative(page: PdfRenderer.Page, pw: Int, ph: Int): Boolean? {
+        val w = (pw / 2).coerceAtLeast(32)
+        val h = (ph / 2).coerceAtLeast(32)
+        val a = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        try {
+            a.eraseColor(Color.WHITE)
+            b.eraseColor(Color.WHITE)
+            page.render(a, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            page.render(b, null, Matrix(), PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            val pa = IntArray(w * h)
+            val pb = IntArray(w * h)
+            a.getPixels(pa, 0, w, 0, 0, w, h)
+            b.getPixels(pb, 0, w, 0, 0, w, h)
+            if (pa.all { it == Color.WHITE }) return null // página em branco: não dá para concluir
+            return pa.contentEquals(pb)
+        } finally {
+            a.recycle()
+            b.recycle()
+        }
+    }
+
+    private fun updateTiles() {
+        if (reflowMode || scaling || currentUri == null) return
+        val r = renderer ?: return
+        for (i in 0 until list.childCount) {
+            val h = list.getChildViewHolder(list.getChildAt(i)) as? ImageAdapter.ImgVH ?: continue
+            val img = h.img
+            val pos = h.boundPos
+            if (pos < 0 || pos >= sizes.size) continue
+            val dw = img.width
+            val dh = img.height
+            if (dw <= 0 || dh <= 0) continue
+            val base = (img.drawable as? BitmapDrawable)?.bitmap ?: continue
+            if (base.width >= dw - 8) {
+                // o desenho da página já está na resolução total: sem pedaço extra
+                if (img.tileKey.isNotEmpty()) img.setTile(null, 0, 0, null, "")
+                continue
+            }
+            val vis = Rect()
+            if (!img.getLocalVisibleRect(vis) || vis.width() < 8 || vis.height() < 8) continue
+            val key = "$pos|$dw|${vis.left},${vis.top},${vis.right},${vis.bottom}"
+            if (key == img.tileKey) continue
+            val vw = vis.width()
+            val vh = vis.height()
+            renderExec.execute {
+                if (h.boundPos != pos) return@execute
+                var out: Bitmap? = null
+                synchronized(rendererLock) {
+                    val rr = renderer
+                    if (rr == null || rr !== r) return@execute
+                    try {
+                        val page = rr.openPage(pos)
+                        try {
+                            val pw = page.width
+                            val ph = page.height
+                            if (tileRelative == null) tileRelative = probeRelative(page, pw, ph)
+                            val rel = tileRelative
+                            if (rel != null && pw > 0 && ph > 0) {
+                                // bitmap com a mesma proporção da página, grande o bastante para a parte visível
+                                val tw = maxOf(vw, Math.ceil(vh.toDouble() * pw / ph).toInt())
+                                val th = maxOf(vh, Math.ceil(tw.toDouble() * ph / pw).toInt())
+                                if (tw.toLong() * th <= 16_000_000L) {
+                                    val b = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+                                    b.eraseColor(Color.WHITE)
+                                    val m = Matrix()
+                                    if (rel) m.setScale(dw.toFloat() / tw, dh.toFloat() / th)
+                                    else m.setScale(dw.toFloat() / pw, dh.toFloat() / ph)
+                                    m.postTranslate(-vis.left.toFloat(), -vis.top.toFloat())
+                                    page.render(b, null, m, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                    out = b
+                                }
+                            }
+                        } finally {
+                            page.close()
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
+                val done = out ?: return@execute
+                main.post {
+                    if (h.boundPos == pos && img.width == dw && img.height == dh) {
+                        img.setTile(done, vw, vh, vis, key)
+                    }
+                }
+            }
+        }
+    }
+
     private fun closeRenderer() {
         synchronized(rendererLock) {
             try { renderer?.close() } catch (_: Throwable) {}
@@ -2300,6 +2446,7 @@ class MainActivity : AppCompatActivity() {
             h.img.setBackgroundColor(if (night) Color.parseColor("#1A1A1A") else Color.WHITE)
             h.img.setImageBitmap(null)
             h.boundPos = position
+            h.img.setTile(null, 0, 0, null, "") // o pedaço nítido antigo não vale mais
 
             // marcação de texto e links desta página
             h.img.pageW = sz[0].toFloat()
@@ -2324,6 +2471,7 @@ class MainActivity : AppCompatActivity() {
             val hit = bmpCache.get(key)
             if (hit != null) {
                 h.img.setImageBitmap(hit)
+                scheduleTiles()
                 return
             }
 
@@ -2345,13 +2493,19 @@ class MainActivity : AppCompatActivity() {
                 }
                 val done = bmp ?: return@execute
                 bmpCache.put(key, done)
-                main.post { if (h.boundPos == position) h.img.setImageBitmap(done) }
+                main.post {
+                    if (h.boundPos == position) {
+                        h.img.setImageBitmap(done)
+                        scheduleTiles()
+                    }
+                }
             }
         }
 
         override fun onViewRecycled(h: ImgVH) {
             h.boundPos = -1
             h.img.selRects = emptyList()
+            h.img.setTile(null, 0, 0, null, "")
             h.img.setImageBitmap(null)
         }
     }
