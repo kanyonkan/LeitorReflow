@@ -1089,7 +1089,8 @@ class MainActivity : AppCompatActivity() {
         }
         backStack.add(currentPage())
         lm().scrollToPositionWithOffset(n, 0)
-        hScroll.scrollTo(0, 0)
+        // modo Original: mantém a centralização ajustada ao seguir o link; no Refluxo volta ao início
+        if (reflowMode) hScroll.scrollTo(0, 0)
     }
 
     private fun openUrl(raw: String) {
