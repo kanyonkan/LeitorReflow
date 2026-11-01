@@ -373,6 +373,7 @@ class MainActivity : AppCompatActivity() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 // um link acabou de ser tocado: não alterna a barra
                 if (SystemClock.uptimeMillis() - lastLinkTap < 700) return false
+                if (overOverlay(e)) return false
                 val w = root.width
                 val h = root.height
                 if (e.x > w * 0.25f && e.x < w * 0.75f && e.y > h * TAP_TOP && e.y < h * TAP_BOTTOM) {
@@ -402,7 +403,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onDoubleTapEvent(e: MotionEvent): Boolean {
-                if (e.actionMasked != MotionEvent.ACTION_UP) return false
+                if (e.actionMasked != MotionEvent.ACTION_UP || overOverlay(e)) return false
                 val d = edgeDir(e.x, e.y)
                 if (d == 0) return false
                 val n = if (lastEdgeDir == d && SystemClock.uptimeMillis() - lastEdgeTime < 800) 2 else 1
@@ -415,7 +416,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 // dois toques rápidos no centro: alterna entre Original e Refluxo
-                if (currentUri == null) return false
+                if (currentUri == null || overOverlay(e)) return false
                 val w = root.width
                 val h = root.height
                 if (e.x > w * 0.25f && e.x < w * 0.75f && e.y > h * TAP_TOP && e.y < h * TAP_BOTTOM) {
@@ -444,6 +445,19 @@ class MainActivity : AppCompatActivity() {
                 return false
             }
         })
+    }
+
+    /** O toque caiu sobre o menu, o número da página ou a barra de seleção: não é toque na página. */
+    private fun overOverlay(e: MotionEvent): Boolean {
+        val loc = IntArray(2)
+        for (v in listOf<View>(bar, pageIndicator, selBar)) {
+            if (v.visibility != View.VISIBLE || v.width == 0) continue
+            v.getLocationOnScreen(loc)
+            if (e.rawX >= loc[0] && e.rawX <= loc[0] + v.width &&
+                e.rawY >= loc[1] && e.rawY <= loc[1] + v.height
+            ) return true
+        }
+        return false
     }
 
     private var lastEdgeDir = 0
