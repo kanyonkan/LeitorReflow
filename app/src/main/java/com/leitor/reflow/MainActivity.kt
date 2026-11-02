@@ -263,8 +263,8 @@ class MainActivity : AppCompatActivity() {
         const val ZOOM_STEP = 0.25f
         // velocidade mínima (px/s) para o deslize virar a página; abaixo disso só move a página
         const val FAST_SWIPE = 1200f
-        // no vertical um deslize curto e rápido dá velocidade menor: limite mais baixo
-        const val FAST_SWIPE_V = 1000f
+        // no vertical a página só troca com arrasto LONGO (em dp); arrasto curto só desloca dentro da página
+        const val LONG_DRAG_DP = 200
         // região vertical onde o toque vale (fração da altura da tela): antes 0.25–0.75
         const val TAP_TOP = 0.08f
         const val TAP_BOTTOM = 0.92f
@@ -375,6 +375,13 @@ class MainActivity : AppCompatActivity() {
     // posição horizontal da página ao encostar o dedo e página a virar ao soltar (deslize rápido)
     private var downScrollX = 0
     private var turnAfterUp = 0
+    // arrasto vertical: onde começou, qual página estava no topo e se virou página ao soltar
+    private var dragDownX = 0f
+    private var dragDownY = 0f
+    private var dragMulti = false
+    private var dragFirst = 0
+    private var dragPartial = false
+    private var dragTurn = 0
     // posição horizontal (centralização) do modo Original, guardada ao ir para o Refluxo
     private var origScrollX = 0
 
@@ -569,7 +576,17 @@ class MainActivity : AppCompatActivity() {
             canPanLeftAtDown = hScroll.canScrollHorizontally(-1)
             downScrollX = hScroll.scrollX
             turnAfterUp = 0
+            dragDownX = ev.x
+            dragDownY = ev.y
+            dragMulti = false
+            dragTurn = 0
+            if (!isBook && list.layoutManager != null) {
+                dragFirst = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
+                val v = lm().findViewByPosition(dragFirst)
+                dragPartial = v != null && v.top < list.paddingTop - dp(8)
+            }
         }
+        if (ev.pointerCount > 1) dragMulti = true
         scaleDetector.onTouchEvent(ev)
         if (scaling) {
             // durante a pinça, o resto da tela não recebe os toques
@@ -583,7 +600,32 @@ class MainActivity : AppCompatActivity() {
             return true
         }
         tapDetector.onTouchEvent(ev)
+        if (ev.actionMasked == MotionEvent.ACTION_UP && !isBook && !dragMulti &&
+            !pinchedRecently && !selDragging && !overOverlay(ev)
+        ) {
+            // arrasto longo e mais vertical que lateral: vai virar página ao soltar
+            val dy = ev.y - dragDownY
+            val dx = ev.x - dragDownX
+            if (abs(dy) >= dp(LONG_DRAG_DP) && abs(dy) >= 2f * abs(dx)) dragTurn = if (dy < 0) 1 else -1
+        }
         val handled = super.dispatchTouchEvent(ev)
+        if (dragTurn != 0 && ev.actionMasked == MotionEvent.ACTION_UP) {
+            val count = list.adapter?.itemCount ?: 0
+            if (count > 0) {
+                // conta a partir da página que estava no topo quando o dedo encostou
+                val t = when {
+                    dragTurn > 0 -> dragFirst + 1
+                    dragPartial -> dragFirst
+                    else -> dragFirst - 1
+                }.coerceIn(0, count - 1)
+                val sc = object : LinearSmoothScroller(this@MainActivity) {
+                    override fun getVerticalSnapPreference() = SNAP_TO_START
+                }
+                sc.targetPosition = t
+                lm().startSmoothScroll(sc)
+            }
+            dragTurn = 0
+        }
         if (turnAfterUp != 0 && ev.actionMasked == MotionEvent.ACTION_UP) {
             // deslize rápido: desfaz o pequeno deslocamento do arrasto e cancela a inércia,
             // para a próxima página entrar na mesma posição horizontal
@@ -1015,22 +1057,10 @@ class MainActivity : AppCompatActivity() {
         list.onFlingListener = null
         if (isBook) snapHelper.attachToRecyclerView(list)
         if (!isBook) {
-            // vertical (Original e Refluxo): deslize rápido vira UMA página e para; lento só rola
+            // vertical (Original e Refluxo): arrasto longo vira UMA página e para (decidido ao soltar
+            // o dedo, em dispatchTouchEvent); arrasto curto só rola dentro da página
             list.onFlingListener = object : RecyclerView.OnFlingListener() {
-                override fun onFling(velocityX: Int, velocityY: Int): Boolean {
-                    if (scaling || pinchedRecently || selDragging) return false
-                    if (abs(velocityY) < FAST_SWIPE_V) return false // o componente lateral é ignorado
-                    val count = list.adapter?.itemCount ?: 0
-                    if (count == 0) return false
-                    val dir = if (velocityY > 0) 1 else -1
-                    val t = verticalTarget(dir, count)
-                    val sc = object : LinearSmoothScroller(this@MainActivity) {
-                        override fun getVerticalSnapPreference() = SNAP_TO_START
-                    }
-                    sc.targetPosition = t
-                    lm().startSmoothScroll(sc)
-                    return true
-                }
+                override fun onFling(velocityX: Int, velocityY: Int): Boolean = dragTurn != 0
             }
         }
         list.setPadding(0, if (isBook) 0 else dp(30), 0, if (isBook) 0 else dp(30))
