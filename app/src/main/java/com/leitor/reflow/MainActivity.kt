@@ -264,7 +264,7 @@ class MainActivity : AppCompatActivity() {
         // velocidade mínima (px/s) para o deslize virar a página; abaixo disso só move a página
         const val FAST_SWIPE = 1200f
         // no vertical um deslize curto e rápido dá velocidade menor: limite mais baixo
-        const val FAST_SWIPE_V = 600f
+        const val FAST_SWIPE_V = 1000f
         // região vertical onde o toque vale (fração da altura da tela): antes 0.25–0.75
         const val TAP_TOP = 0.08f
         const val TAP_BOTTOM = 0.92f
