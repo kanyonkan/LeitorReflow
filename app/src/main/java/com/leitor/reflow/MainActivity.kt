@@ -246,6 +246,8 @@ class MainActivity : AppCompatActivity() {
         const val ZOOM_STEP = 0.25f
         // velocidade mínima (px/s) para o deslize virar a página; abaixo disso só move a página
         const val FAST_SWIPE = 1200f
+        // no vertical um deslize curto e rápido dá velocidade menor: limite mais baixo
+        const val FAST_SWIPE_V = 600f
         // região vertical onde o toque vale (fração da altura da tela): antes 0.25–0.75
         const val TAP_TOP = 0.08f
         const val TAP_BOTTOM = 0.92f
@@ -999,7 +1001,7 @@ class MainActivity : AppCompatActivity() {
             list.onFlingListener = object : RecyclerView.OnFlingListener() {
                 override fun onFling(velocityX: Int, velocityY: Int): Boolean {
                     if (scaling || pinchedRecently || selDragging) return false
-                    if (abs(velocityY) < FAST_SWIPE || abs(velocityY) < abs(velocityX)) return false
+                    if (abs(velocityY) < FAST_SWIPE_V || abs(velocityY) < abs(velocityX)) return false
                     val count = list.adapter?.itemCount ?: 0
                     if (count == 0) return false
                     val dir = if (velocityY > 0) 1 else -1
