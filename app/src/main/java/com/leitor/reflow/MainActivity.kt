@@ -86,8 +86,25 @@ class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
      * Sem zoom lateral não há o que rolar aqui: deixa o arrasto para os lados com a lista
      * (troca de página no formato horizontal). O HorizontalScrollView puro interceptaria o gesto.
      */
+    /** No formato vertical, o movimento só vira rolagem lateral se for claramente horizontal. */
+    var verticalBias = false
+    private var downX = 0f
+    private var downY = 0f
+
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
         if (!canScrollHorizontally(1) && !canScrollHorizontally(-1)) return false
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = ev.x
+                downY = ev.y
+            }
+            MotionEvent.ACTION_MOVE -> if (verticalBias) {
+                // um pequeno desvio para o lado não rouba o gesto de deslizar para cima/baixo
+                val dx = kotlin.math.abs(ev.x - downX)
+                val dy = kotlin.math.abs(ev.y - downY)
+                if (dx < 2f * dy) return false
+            }
+        }
         return super.onInterceptTouchEvent(ev)
     }
 
@@ -991,6 +1008,7 @@ class MainActivity : AppCompatActivity() {
         applyWidth()
         val orientation = if (isBook) LinearLayoutManager.HORIZONTAL else LinearLayoutManager.VERTICAL
         list.layoutManager = PagerLayoutManager(this, orientation)
+        (hScroll as? FixedWidthScroll)?.verticalBias = !isBook
         // desliga o snap antes de refazer: se ele já estava ligado a esta lista, um simples
         // "anexar de novo" não reinstala o ouvinte de fling e o deslize passaria a correr solto
         snapHelper.attachToRecyclerView(null)
@@ -1001,7 +1019,7 @@ class MainActivity : AppCompatActivity() {
             list.onFlingListener = object : RecyclerView.OnFlingListener() {
                 override fun onFling(velocityX: Int, velocityY: Int): Boolean {
                     if (scaling || pinchedRecently || selDragging) return false
-                    if (abs(velocityY) < FAST_SWIPE_V || abs(velocityY) < abs(velocityX)) return false
+                    if (abs(velocityY) < FAST_SWIPE_V) return false // o componente lateral é ignorado
                     val count = list.adapter?.itemCount ?: 0
                     if (count == 0) return false
                     val dir = if (velocityY > 0) 1 else -1
