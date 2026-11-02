@@ -271,8 +271,8 @@ class MainActivity : AppCompatActivity() {
         const val TEXT_DEFAULT = 16f // tamanho padrão do texto no Refluxo (antes 18f)
         const val TEXT_MIN = 12f
         const val TEXT_MAX = 40f
-        const val RENDER_MAX_W = 4096 // largura máxima do desenho da página (antes 2700)
-        const val RENDER_MAX_PIXELS = 24_000_000L // ~96 MB: acima de ~100 MB o Android recusa desenhar o bitmap
+        const val RENDER_MAX_W = 2700 // largura máxima do desenho de base da página; acima disso o pedaço nítido completa
+        const val RENDER_MAX_PIXELS = 12_000_000L // ~48 MB por página de base (o Android recusa bitmaps acima de ~100 MB)
         const val MAX_HITS = 300
         const val REFLOW_CACHE_VERSION = 1 // mude quando o método de extração mudar
     }
@@ -296,7 +296,7 @@ class MainActivity : AppCompatActivity() {
     private val infoRequested = HashSet<Int>()
     private val wordCache = HashMap<Int, List<Word>>() // palavras para a seleção
     private val bmpCache = object : LruCache<String, Bitmap>(
-        (Runtime.getRuntime().maxMemory() / 3).toInt().coerceAtLeast(8 * 1024 * 1024)
+        (Runtime.getRuntime().maxMemory() / 6).toInt().coerceAtLeast(8 * 1024 * 1024)
     ) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
