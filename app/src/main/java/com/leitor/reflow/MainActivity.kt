@@ -263,6 +263,8 @@ class MainActivity : AppCompatActivity() {
         const val ZOOM_STEP = 0.25f
         // velocidade mínima (px/s) para o deslize virar a página; abaixo disso só move a página
         const val FAST_SWIPE = 1200f
+        // distância da inércia do deslize = velocidade (px/s) x este tempo, limitada à página
+        const val FLING_SECONDS = 0.3f
         // região vertical onde o toque vale (fração da altura da tela): antes 0.25–0.75
         const val TAP_TOP = 0.08f
         const val TAP_BOTTOM = 0.92f
@@ -468,24 +470,8 @@ class MainActivity : AppCompatActivity() {
                 return false
             }
 
-            override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                // só no formato horizontal, modo original, com zoom: o RecyclerView está travado
-                // e a página vira só se o gesto começou na borda da página ampliada
-                if (!isBook || e1 == null || scaling || pinchedRecently || selDragging) return false
-                val dx = e2.x - e1.x
-                val dy = e2.y - e1.y
-                if (!reflowMode && zoom > 1f) {
-                    // deslize RÁPIDO vira a página (mantendo a centralização);
-                    // deslize lento só move a página dentro da tela
-                    val fast = abs(dx) > dp(60) && abs(dx) > abs(dy) * 1.5f && abs(vx) > FAST_SWIPE
-                    if (!fast) return false
-                    val dir = if (dx < 0) 1 else -1
-                    turnAfterUp = dir
-                    turnPage(dir)
-                    return true
-                }
-                return false
-            }
+            // troca de página por deslize desativada: só o toque nas bordas troca de página
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean = false
         })
     }
 
@@ -796,8 +782,15 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        savePage()
-        saveCenter()
+        // gravação imediata (commit): se o app for fechado à força logo depois, não se perde
+        savePage(true)
+        saveCenter(true)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        savePage(true)
+        saveCenter(true)
     }
 
     override fun onDestroy() {
@@ -917,10 +910,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Grava a centralização (posição horizontal do modo Original) junto com o zoom lembrado. */
-    private fun saveCenter() {
+    private fun saveCenter(sync: Boolean = false) {
         if (!keepZoom || currentUri == null || currentKey.isEmpty()) return
         val x = if (reflowMode) origScrollX else hScroll.scrollX
-        getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt(dk("scrollX"), x).apply()
+        val e = getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt(dk("scrollX"), x)
+        if (sync) e.commit() else e.apply()
     }
 
     private fun showSettings() {
@@ -1011,8 +1005,22 @@ class MainActivity : AppCompatActivity() {
         // "anexar de novo" não reinstala o ouvinte de fling e o deslize passaria a correr solto
         snapHelper.attachToRecyclerView(null)
         list.onFlingListener = null
-        if (isBook) snapHelper.attachToRecyclerView(list)
-        // vertical: o arrasto corre livremente (sem troca de página por deslize); a troca é pelo toque na borda
+        // sem "encaixe" de página e sem troca de página por deslize (vertical e horizontal):
+        // o dedo só desloca; a troca de página é pelo toque nas bordas
+        list.onFlingListener = object : RecyclerView.OnFlingListener() {
+            override fun onFling(velocityX: Int, velocityY: Int): Boolean {
+                if (isBook || scaling || pinchedRecently || selDragging) return true // sem inércia
+                // vertical: a inércia nunca passa dos limites da página que está no topo
+                val v = lm().findViewByPosition(lm().findFirstVisibleItemPosition()) ?: return true
+                val top = list.paddingTop
+                val bottom = list.height - list.paddingBottom
+                val want = (velocityY * FLING_SECONDS).toInt()
+                val d = if (want > 0) minOf(want, maxOf(0, v.bottom - bottom))
+                else -minOf(-want, maxOf(0, top - v.top))
+                if (d != 0) list.smoothScrollBy(0, d)
+                return true
+            }
+        }
         list.setPadding(0, if (isBook) 0 else dp(30), 0, if (isBook) 0 else dp(30))
         list.adapter = if (reflowMode) reflowAdapter else imageAdapter
         lockPaging()
@@ -1065,6 +1073,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updatePageIndicator() {
+        schedulePageSave()
         val n = list.adapter?.itemCount ?: 0
         if (n == 0 || !barVisible) {
             pageIndicator.visibility = View.GONE
@@ -1144,10 +1153,31 @@ class MainActivity : AppCompatActivity() {
         // mantém a centralização (deslocamento horizontal) ajustada ao trocar de página
     }
 
-    private fun savePage() {
+    /** Página a lembrar: no vertical, a que está no topo da tela (como a restauração a coloca). */
+    private fun pageToSave(): Int {
+        if (isBook) return currentPage()
+        val count = list.adapter?.itemCount ?: 0
+        val first = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
+        val v = lm().findViewByPosition(first)
+        // se quase toda a página do topo já saiu da tela, o que se lê é a seguinte
+        val p = if (v != null && v.bottom < list.height * 0.25f) first + 1 else first
+        return p.coerceIn(0, (count - 1).coerceAtLeast(0))
+    }
+
+    private val savePageRunnable = Runnable { savePage() }
+
+    /** Guarda a página pouco depois de parar de mexer, para não depender de o app fechar direito. */
+    private fun schedulePageSave() {
+        if (!rememberPage) return
+        main.removeCallbacks(savePageRunnable)
+        main.postDelayed(savePageRunnable, 700)
+    }
+
+    private fun savePage(sync: Boolean = false) {
         if (!rememberPage || currentUri == null || pendingPage >= 0) return
-        if ((list.adapter?.itemCount ?: 0) == 0) return
-        getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt(currentKey, currentPage()).apply()
+        if ((list.adapter?.itemCount ?: 0) == 0 || list.layoutManager == null) return
+        val e = getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt(currentKey, pageToSave())
+        if (sync) e.commit() else e.apply()
     }
 
     private fun docKey(uri: Uri): String {
