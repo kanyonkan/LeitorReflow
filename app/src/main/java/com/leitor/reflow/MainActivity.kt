@@ -375,6 +375,10 @@ class MainActivity : AppCompatActivity() {
     // posição horizontal da página ao encostar o dedo e página a virar ao soltar (deslize rápido)
     private var downScrollX = 0
     private var turnAfterUp = 0
+    // Original + horizontal com zoom: quanto o dedo foi além da borda da página ampliada (px, com sinal)
+    private var overAcc = 0f
+    private var overLastX = 0f
+    private var overInvalid = false
     // posição horizontal (centralização) do modo Original, guardada ao ir para o Refluxo
     private var origScrollX = 0
 
@@ -553,7 +557,11 @@ class MainActivity : AppCompatActivity() {
             canPanLeftAtDown = hScroll.canScrollHorizontally(-1)
             downScrollX = hScroll.scrollX
             turnAfterUp = 0
+            overAcc = 0f
+            overLastX = ev.x
+            overInvalid = false
         }
+        if (ev.pointerCount > 1) overInvalid = true
         scaleDetector.onTouchEvent(ev)
         if (scaling) {
             // durante a pinça, o resto da tela não recebe os toques
@@ -567,7 +575,27 @@ class MainActivity : AppCompatActivity() {
             return true
         }
         tapDetector.onTouchEvent(ev)
+        val zoomedBook = isBook && !reflowMode && zoom > 1f
+        if (zoomedBook && ev.actionMasked == MotionEvent.ACTION_MOVE) {
+            // a página ampliada já está na borda e o dedo continua puxando para o mesmo lado:
+            // soma esse "excesso" (antes de a rolagem lateral tratar este movimento)
+            val dxm = ev.x - overLastX
+            overLastX = ev.x
+            when {
+                dxm < 0f && !hScroll.canScrollHorizontally(1) -> overAcc = if (overAcc > 0f) dxm else overAcc + dxm
+                dxm > 0f && !hScroll.canScrollHorizontally(-1) -> overAcc = if (overAcc < 0f) dxm else overAcc + dxm
+                dxm != 0f -> overAcc = 0f
+            }
+        }
         val handled = super.dispatchTouchEvent(ev)
+        if (zoomedBook && ev.actionMasked == MotionEvent.ACTION_UP &&
+            !overInvalid && !scaling && !pinchedRecently && !selDragging &&
+            abs(overAcc) >= dp(56)
+        ) {
+            // arrastou além da borda: troca UMA página (esquerda = próxima), mantendo zoom e posição lateral
+            turnPage(if (overAcc < 0f) 1 else -1)
+            overAcc = 0f
+        }
         if (turnAfterUp != 0 && ev.actionMasked == MotionEvent.ACTION_UP) {
             // deslize rápido: desfaz o pequeno deslocamento do arrasto e cancela a inércia,
             // para a próxima página entrar na mesma posição horizontal
