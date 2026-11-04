@@ -592,8 +592,18 @@ class MainActivity : AppCompatActivity() {
             !overInvalid && !scaling && !pinchedRecently && !selDragging &&
             abs(overAcc) >= dp(56)
         ) {
-            // arrastou além da borda: troca UMA página (esquerda = próxima), mantendo zoom e posição lateral
-            turnPage(if (overAcc < 0f) 1 else -1)
+            // só troca se a página JÁ estava no canto quando o dedo encostou (esquerda = próxima);
+            // se estava no meio, o arrasto só levou a página até o canto
+            val dir = if (overAcc < 0f) 1 else -1
+            val atCornerAtDown = if (dir > 0) !canPanRightAtDown else !canPanLeftAtDown
+            if (atCornerAtDown) {
+                turnPage(dir)
+                // a nova página entra centralizada, com o mesmo zoom
+                val cx = ((listWidth - hScroll.width) / 2).coerceAtLeast(0)
+                hScroll.fling(0)
+                hScroll.scrollTo(cx, 0)
+                hScroll.post { hScroll.scrollTo(cx, 0) }
+            }
             overAcc = 0f
         }
         if (turnAfterUp != 0 && ev.actionMasked == MotionEvent.ACTION_UP) {
