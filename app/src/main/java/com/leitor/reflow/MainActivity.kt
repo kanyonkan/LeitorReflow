@@ -265,6 +265,8 @@ class MainActivity : AppCompatActivity() {
         const val FAST_SWIPE = 1200f
         // distância da inércia do deslize = velocidade (px/s) x este tempo, limitada à página
         const val FLING_SECONDS = 0.3f
+        // vertical: o deslize corre (velocidade em px/s x este tempo) px e desacelera; maior = corre mais longe
+        const val VERTICAL_FLING_SECONDS = 0.8f
         // região vertical onde o toque vale (fração da altura da tela): antes 0.25–0.75
         const val TAP_TOP = 0.08f
         const val TAP_BOTTOM = 0.92f
@@ -1043,19 +1045,15 @@ class MainActivity : AppCompatActivity() {
         // "anexar de novo" não reinstala o ouvinte de fling e o deslize passaria a correr solto
         snapHelper.attachToRecyclerView(null)
         list.onFlingListener = null
-        // sem "encaixe" de página e sem troca de página por deslize (vertical e horizontal):
-        // o dedo só desloca; a troca de página é pelo toque nas bordas
+        // horizontal: sem "encaixe" nem inércia (a troca é pelo toque nas bordas ou arrastando além do canto);
+        // vertical: o deslize corre solto, mais longe que o padrão do Android, e passa por várias páginas
         list.onFlingListener = object : RecyclerView.OnFlingListener() {
             override fun onFling(velocityX: Int, velocityY: Int): Boolean {
-                if (isBook || scaling || pinchedRecently || selDragging) return true // sem inércia
-                // vertical: a inércia nunca passa dos limites da página que está no topo
-                val v = lm().findViewByPosition(lm().findFirstVisibleItemPosition()) ?: return true
-                val top = list.paddingTop
-                val bottom = list.height - list.paddingBottom
-                val want = (velocityY * FLING_SECONDS).toInt()
-                val d = if (want > 0) minOf(want, maxOf(0, v.bottom - bottom))
-                else -minOf(-want, maxOf(0, top - v.top))
-                if (d != 0) list.smoothScrollBy(0, d)
+                if (isBook || scaling || pinchedRecently || selDragging) return true // horizontal: sem inércia
+                val dist = (velocityY * VERTICAL_FLING_SECONDS).toInt()
+                if (dist == 0) return true
+                val ms = (600f + abs(velocityY) * 0.15f).coerceAtMost(2500f).toInt()
+                list.smoothScrollBy(0, dist, android.view.animation.DecelerateInterpolator(2f), ms)
                 return true
             }
         }
@@ -1169,6 +1167,7 @@ class MainActivity : AppCompatActivity() {
             val t = verticalTarget(delta, count)
             if (t == first && delta > 0) return
             lm().scrollToPositionWithOffset(t, 0)
+            // a nova página mantém a posição lateral (zoom e centralização) da anterior
             return
         }
         val cur = currentPage()
