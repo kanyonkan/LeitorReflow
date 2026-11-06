@@ -378,6 +378,7 @@ class MainActivity : AppCompatActivity() {
     private var downScrollX = 0
     private var turnAfterUp = 0
     private var snapAfterFling = false
+    private var snapStartOff = 0 // posição da página do topo/esquerda ao encostar o dedo (px)
     // Original + horizontal com zoom: quanto o dedo foi além da borda da página ampliada (px, com sinal)
     private var overAcc = 0f
     private var overLastX = 0f
@@ -564,6 +565,11 @@ class MainActivity : AppCompatActivity() {
             overLastX = ev.x
             overInvalid = false
             snapAfterFling = false // tocar na tela interrompe a corrida: sem encaixe
+            snapStartOff = 0
+            if (list.layoutManager != null && (list.adapter?.itemCount ?: 0) > 0) {
+                val v0 = lm().findViewByPosition(lm().findFirstVisibleItemPosition())
+                if (v0 != null) snapStartOff = if (isBook) v0.left else v0.top - list.paddingTop
+            }
         }
         if (ev.pointerCount > 1) overInvalid = true
         scaleDetector.onTouchEvent(ev)
@@ -975,12 +981,18 @@ class MainActivity : AppCompatActivity() {
         val first = lm().findFirstVisibleItemPosition()
         if (first < 0) return
         val v = lm().findViewByPosition(first) ?: return
+        // a página final para na mesma posição em que a página inicial estava ao começar o deslize
+        val off = snapStartOff
         if (isBook) {
-            val dx = if (-v.left > v.width / 2) v.right else v.left
+            val d1 = v.left - off
+            val d2 = v.right - off
+            val dx = if (abs(d1) <= abs(d2)) d1 else d2
             if (dx != 0) list.smoothScrollBy(dx, 0)
         } else {
-            val top = list.paddingTop
-            val dy = if (top - v.top > v.height / 2) v.bottom - top else v.top - top
+            val o = v.top - list.paddingTop
+            val d1 = o - off
+            val d2 = o + v.height - off
+            val dy = if (abs(d1) <= abs(d2)) d1 else d2
             if (dy != 0) list.smoothScrollBy(0, dy)
         }
     }
