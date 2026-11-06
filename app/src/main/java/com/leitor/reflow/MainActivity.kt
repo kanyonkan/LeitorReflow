@@ -377,6 +377,7 @@ class MainActivity : AppCompatActivity() {
     // posição horizontal da página ao encostar o dedo e página a virar ao soltar (deslize rápido)
     private var downScrollX = 0
     private var turnAfterUp = 0
+    private var snapAfterFling = false
     // Original + horizontal com zoom: quanto o dedo foi além da borda da página ampliada (px, com sinal)
     private var overAcc = 0f
     private var overLastX = 0f
@@ -562,6 +563,7 @@ class MainActivity : AppCompatActivity() {
             overAcc = 0f
             overLastX = ev.x
             overInvalid = false
+            snapAfterFling = false // tocar na tela interrompe a corrida: sem encaixe
         }
         if (ev.pointerCount > 1) overInvalid = true
         scaleDetector.onTouchEvent(ev)
@@ -659,7 +661,14 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
-                if (newState == RecyclerView.SCROLL_STATE_IDLE) updatePageIndicator()
+                if (newState == RecyclerView.SCROLL_STATE_IDLE) {
+                    updatePageIndicator()
+                    // terminou uma corrida por deslize rápido: encaixa na página mais próxima
+                    if (snapAfterFling) {
+                        snapAfterFling = false
+                        snapToNearestPage()
+                    }
+                }
             }
         })
         hScroll = FixedWidthScroll(this).apply { isHorizontalScrollBarEnabled = false }
@@ -959,6 +968,23 @@ class MainActivity : AppCompatActivity() {
         if (sync) e.commit() else e.apply()
     }
 
+    /** Ao fim de um deslize rápido, completa o rolamento até o começo da página mais próxima. */
+    private fun snapToNearestPage() {
+        if (list.layoutManager == null || (list.adapter?.itemCount ?: 0) == 0) return
+        if (isBook && !reflowMode && zoom > 1f) return
+        val first = lm().findFirstVisibleItemPosition()
+        if (first < 0) return
+        val v = lm().findViewByPosition(first) ?: return
+        if (isBook) {
+            val dx = if (-v.left > v.width / 2) v.right else v.left
+            if (dx != 0) list.smoothScrollBy(dx, 0)
+        } else {
+            val top = list.paddingTop
+            val dy = if (top - v.top > v.height / 2) v.bottom - top else v.top - top
+            if (dy != 0) list.smoothScrollBy(0, dy)
+        }
+    }
+
     /** Botão "Centralizar": leva a página ampliada ao centro da tela (modo Original, qualquer zoom e formato). */
     private fun centerPage() {
         if (currentUri == null) return
@@ -1059,15 +1085,21 @@ class MainActivity : AppCompatActivity() {
         // "anexar de novo" não reinstala o ouvinte de fling e o deslize passaria a correr solto
         snapHelper.attachToRecyclerView(null)
         list.onFlingListener = null
-        // horizontal: sem "encaixe" nem inércia (a troca é pelo toque nas bordas ou arrastando além do canto);
-        // vertical: o deslize corre solto, mais longe que o padrão do Android, e passa por várias páginas
+        // o deslize corre solto, mais longe que o padrão do Android, e passa por várias páginas:
+        // vertical em qualquer zoom; horizontal só no Refluxo ou no Original com zoom x1
+        // (horizontal com zoom: sem inércia; a troca é pelo toque nas bordas ou arrastando além do canto)
         list.onFlingListener = object : RecyclerView.OnFlingListener() {
             override fun onFling(velocityX: Int, velocityY: Int): Boolean {
-                if (isBook || scaling || pinchedRecently || selDragging) return true // horizontal: sem inércia
-                val dist = (velocityY * VERTICAL_FLING_SECONDS).toInt()
+                if (scaling || pinchedRecently || selDragging) return true
+                val v = if (isBook) velocityX else velocityY
+                if (isBook && !reflowMode && zoom > 1f) return true
+                val dist = (v * VERTICAL_FLING_SECONDS).toInt()
                 if (dist == 0) return true
-                val ms = (600f + abs(velocityY) * 0.15f).coerceAtMost(2500f).toInt()
-                list.smoothScrollBy(0, dist, android.view.animation.DecelerateInterpolator(2f), ms)
+                val ms = (600f + abs(v) * 0.15f).coerceAtMost(2500f).toInt()
+                val interp = android.view.animation.DecelerateInterpolator(2f)
+                snapAfterFling = true
+                if (isBook) list.smoothScrollBy(dist, 0, interp, ms)
+                else list.smoothScrollBy(0, dist, interp, ms)
                 return true
             }
         }
