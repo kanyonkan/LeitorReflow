@@ -543,6 +543,7 @@ class MainActivity : AppCompatActivity() {
                 if (reflowMode) {
                     saveDocSettings()
                     reflowAdapter.notifyDataSetChanged()
+                    updatePageIndicator()
                 } else {
                     val f = pinchFactor
                     hScroll.scaleX = 1f
@@ -901,6 +902,7 @@ class MainActivity : AppCompatActivity() {
             textSp = (textSp + dir).coerceIn(TEXT_MIN, TEXT_MAX)
             saveDocSettings()
             reflowAdapter.notifyDataSetChanged()
+            updatePageIndicator()
         } else {
             setZoom(zoom + dir * ZOOM_STEP, resources.displayMetrics.widthPixels / 2f)
         }
@@ -925,6 +927,7 @@ class MainActivity : AppCompatActivity() {
         hScroll.doOnNextLayout {
             hScroll.scrollTo(((sx + focusX) * ratio - focusX).toInt().coerceAtLeast(0), 0)
         }
+        updatePageIndicator() // mostra o nível de zoom
     }
 
     private fun toggleTheme() {
@@ -999,16 +1002,48 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Botão "Centralizar": leva a página ampliada ao centro da tela (modo Original, qualquer zoom e formato). */
+    /**
+     * Botão "Centralizar" (modo Original, qualquer zoom e formato).
+     * Zoom x1: encaixa a página (vertical: alinha ao topo; horizontal: alinha à tela).
+     * Zoom maior: centraliza a página no meio da tela, na horizontal e na vertical.
+     */
     private fun centerPage() {
         if (currentUri == null) return
         if (reflowMode) {
             Toast.makeText(this, "Centralizar só funciona no modo Original.", Toast.LENGTH_SHORT).show()
             return
         }
-        val cx = ((listWidth - hScroll.width) / 2).coerceAtLeast(0)
+        if (list.layoutManager == null || (list.adapter?.itemCount ?: 0) == 0) return
         hScroll.fling(0)
+        // sentido horizontal: com zoom, o meio da página; sem zoom não há deslocamento lateral
+        val cx = if (zoom > 1f) ((listWidth - hScroll.width) / 2).coerceAtLeast(0) else 0
         hScroll.smoothScrollTo(cx, 0)
+        if (isBook) {
+            if (zoom > 1f) {
+                // sentido vertical: cada página tem a sua rolagem vertical; leva ao meio dela
+                val sv = lm().findViewByPosition(currentPage()) as? ScrollView
+                val child = sv?.getChildAt(0)
+                if (sv != null && child != null) {
+                    sv.smoothScrollTo(0, ((child.height - sv.height) / 2).coerceAtLeast(0))
+                }
+            } else {
+                // zoom x1: alinha a página mais próxima à tela, como no fim de um deslize rápido
+                val f = lm().findViewByPosition(lm().findFirstVisibleItemPosition()) ?: return
+                val dx = if (-f.left > f.width / 2) f.right else f.left
+                if (dx != 0) list.smoothScrollBy(dx, 0)
+            }
+        } else {
+            // a página que está no meio da tela
+            val v = list.findChildViewUnder(list.width / 2f, list.height / 2f) ?: return
+            val top = list.paddingTop
+            val viewportH = list.height - top - list.paddingBottom
+            val dy = if (zoom > 1f && v.height > viewportH) {
+                (v.top + v.height / 2) - (top + viewportH / 2) // centro da página no centro da tela
+            } else {
+                v.top - top // alinha ao topo da página
+            }
+            if (dy != 0) list.smoothScrollBy(0, dy)
+        }
     }
 
     private fun showSettings() {
@@ -1176,7 +1211,13 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val p = (currentPage() + 1).coerceIn(1, n)
-        val line1 = "Página $p de $n"
+        // o nível de zoom aparece antes: "x2 Página 7 de 212". No Refluxo o nível é o tamanho do texto
+        // em relação ao padrão (A+ / A− / pinça); no tamanho padrão (x1) não aparece
+        val level = if (reflowMode) textSp / TEXT_DEFAULT else zoom
+        val zoomTxt = if (kotlin.math.abs(level - 1f) > 0.005f) {
+            "x" + String.format(java.util.Locale.US, "%.2f", level).trimEnd('0').trimEnd('.') + " "
+        } else ""
+        val line1 = "${zoomTxt}Página $p de $n"
         if (currentName.isBlank()) {
             pageIndicator.text = line1
         } else {
