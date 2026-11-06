@@ -694,8 +694,10 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         layoutBtn = makeBtn("") { cyclePageLayout() }
+        val centerBtn = makeBtn("Centralizar") { centerPage() }
         settingsBtn = makeBtn("Configurar PDF") { showSettings() }
         row2.addView(layoutBtn)
+        row2.addView(centerBtn)
         row2.addView(settingsBtn)
         val row2Lp = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -955,6 +957,18 @@ class MainActivity : AppCompatActivity() {
         val x = if (reflowMode) origScrollX else hScroll.scrollX
         val e = getSharedPreferences("leitor", MODE_PRIVATE).edit().putInt(dk("scrollX"), x)
         if (sync) e.commit() else e.apply()
+    }
+
+    /** Botão "Centralizar": leva a página ampliada ao centro da tela (modo Original, qualquer zoom e formato). */
+    private fun centerPage() {
+        if (currentUri == null) return
+        if (reflowMode) {
+            Toast.makeText(this, "Centralizar só funciona no modo Original.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val cx = ((listWidth - hScroll.width) / 2).coerceAtLeast(0)
+        hScroll.fling(0)
+        hScroll.smoothScrollTo(cx, 0)
     }
 
     private fun showSettings() {
