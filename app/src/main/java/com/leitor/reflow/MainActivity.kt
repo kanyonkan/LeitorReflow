@@ -982,7 +982,9 @@ class MainActivity : AppCompatActivity() {
         if (first < 0) return
         val v = lm().findViewByPosition(first) ?: return
         // a página final para na mesma posição em que a página inicial estava ao começar o deslize
-        val off = snapStartOff
+        // (no horizontal as páginas ocupam a tela toda: a posição que vale é sempre a página encaixada,
+        // senão uma parada anterior "entre duas páginas" seria repetida nas seguintes)
+        val off = if (isBook) 0 else snapStartOff
         if (isBook) {
             val d1 = v.left - off
             val d2 = v.right - off
