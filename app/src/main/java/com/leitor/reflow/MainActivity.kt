@@ -1336,7 +1336,22 @@ class MainActivity : AppCompatActivity() {
         cur = cur.coerceIn(0, count - 1)
         val t = (cur + delta).coerceIn(0, count - 1)
         if (t == cur) return
-        turnTo(t)
+        if (reflowMode && !pagesComplete) {
+            // durante o processamento do Refluxo o salto direto se perdia no formato horizontal;
+            // usa a mesma rolagem do deslize (que funciona), e o encaixe leva a página ao lugar
+            val v0 = lm().findViewByPosition(lm().findFirstVisibleItemPosition())
+            if (v0 != null) {
+                val first = lm().findFirstVisibleItemPosition()
+                val dx = v0.left + (t - first) * list.width
+                snapAfterFling = true
+                list.smoothScrollBy(dx, 0, null, 140)
+                list.postDelayed({
+                    if (list.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
+                        lm().findFirstVisibleItemPosition() != t
+                    ) lm().scrollToPositionWithOffset(t, 0)
+                }, 450)
+            } else turnTo(t)
+        } else turnTo(t)
         // modo original: mantém a centralização (deslocamento horizontal) ajustada no zoom;
         // só no refluxo volta ao início
         if (isBook && reflowMode) hScroll.scrollTo(0, 0)
