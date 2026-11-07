@@ -393,6 +393,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var bar: LinearLayout
     private lateinit var status: TextView
     private lateinit var pageIndicator: TextView
+    private lateinit var progressView: TextView
     private lateinit var modeBtn: Button
     private lateinit var themeBtn: Button
     private lateinit var layoutBtn: Button
@@ -771,6 +772,27 @@ class MainActivity : AppCompatActivity() {
         indLp.bottomMargin = dp(14)
         root.addView(pageIndicator, indLp)
         pageIndicator.setOnClickListener { showGoToDialog() } // toque no número: ir para a página
+
+        // indicador do processamento do Refluxo (canto inferior esquerdo; não recebe toques)
+        progressView = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            setPadding(dp(10), dp(5), dp(10), dp(5))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#CC222222"))
+                cornerRadius = dp(14).toFloat()
+            }
+            isClickable = false
+            visibility = View.GONE
+        }
+        root.addView(
+            progressView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.START
+            ).apply { leftMargin = dp(10); bottomMargin = dp(14) }
+        )
 
         // barra da seleção de texto (modo Original)
         selBar = LinearLayout(this).apply {
@@ -1480,10 +1502,35 @@ class MainActivity : AppCompatActivity() {
         if (reflowMode) showReflow(uri, token) else showOriginal(uri, token)
     }
 
+    private val hideProgressRunnable = Runnable { progressView.visibility = View.GONE }
+
+    /** Mostra o andamento do processamento do Refluxo; ao terminar, avisa e some em seguida. */
+    private fun setReflowProgress(done: Int, total: Int) {
+        main.removeCallbacks(hideProgressRunnable)
+        if (total <= 0) {
+            progressView.visibility = View.GONE
+            return
+        }
+        if (done >= total) {
+            progressView.text = "Refluxo pronto ✓"
+            progressView.visibility = View.VISIBLE
+            main.postDelayed(hideProgressRunnable, 2000)
+        } else {
+            progressView.text = "Processando refluxo… ${done * 100 / total}%"
+            progressView.visibility = View.VISIBLE
+        }
+    }
+
+    private fun hideReflowProgress() {
+        main.removeCallbacks(hideProgressRunnable)
+        progressView.visibility = View.GONE
+    }
+
     private fun showReflow(uri: Uri, token: Int) {
         if (pagesUri == uri && pagesComplete) {
             reflowAdapter.notifyDataSetChanged()
             status.text = "${pages.size} páginas · refluxo"
+            hideReflowProgress()
             restorePending()
             pendingPage = -1
             updatePageIndicator()
@@ -1495,6 +1542,8 @@ class MainActivity : AppCompatActivity() {
         pagesComplete = false
         reflowAdapter.notifyDataSetChanged()
         status.text = "Abrindo…"
+        progressView.text = "Processando refluxo… 0%"
+        progressView.visibility = View.VISIBLE
         val cacheFile = reflowCacheFile(currentKey)
         val startHint = pendingPage // página em que você está: é extraída primeiro
 
@@ -1509,6 +1558,7 @@ class MainActivity : AppCompatActivity() {
                         pages.addAll(cached.pages)
                         reflowAdapter.notifyDataSetChanged()
                         status.text = "${pages.size} páginas · refluxo"
+                        hideReflowProgress()
                         pagesComplete = true
                         restorePending()
                         pendingPage = -1
@@ -1527,6 +1577,7 @@ class MainActivity : AppCompatActivity() {
                     for (k in 0 until total) pages.add(PageText("", emptyList(), false))
                     reflowAdapter.notifyDataSetChanged()
                     status.text = "Carregando… 0 de $total páginas"
+                    setReflowProgress(0, total)
                     restorePending()
                     updatePageIndicator()
                 }
@@ -1563,6 +1614,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         status.text = if (d < total) "Carregando… $d de $total páginas"
                         else "$total páginas · refluxo"
+                        setReflowProgress(d, total)
                         if (d == total) {
                             pagesComplete = true
                             pendingPage = -1
@@ -1575,6 +1627,7 @@ class MainActivity : AppCompatActivity() {
                 if (withText == 0) {
                     main.post {
                         if (token != loadToken) return@post
+                        hideReflowProgress()
                         status.text =
                             "Este PDF não tem texto (é só imagem). Use o modo Original ou faça o OCR."
                     }
@@ -1583,6 +1636,7 @@ class MainActivity : AppCompatActivity() {
                 main.post {
                     if (token != loadToken) return@post
                     status.text = "Não foi possível abrir o PDF."
+                    hideReflowProgress()
                     Toast.makeText(this@MainActivity, "Não foi possível abrir o PDF.", Toast.LENGTH_LONG).show()
                     Toast.makeText(this, e.message ?: "Erro", Toast.LENGTH_LONG).show()
                 }
@@ -1684,6 +1738,7 @@ class MainActivity : AppCompatActivity() {
         imageAdapter.notifyDataSetChanged()
         infoRequested.clear()
         status.text = "Abrindo…"
+        hideReflowProgress()
 
         Thread {
             var fd: ParcelFileDescriptor? = null
