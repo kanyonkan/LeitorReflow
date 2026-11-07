@@ -673,6 +673,9 @@ class MainActivity : AppCompatActivity() {
             layoutManager = PagerLayoutManager(this@MainActivity, LinearLayoutManager.VERTICAL)
             clipToPadding = false
             setItemViewCacheSize(2)
+            // sem animação de troca: durante o processamento do Refluxo a lista é atualizada o
+            // tempo todo e as animações atrapalhavam a troca de página pelo toque
+            itemAnimator = null
         }
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
@@ -1303,9 +1306,24 @@ class MainActivity : AppCompatActivity() {
         if (tries <= 0) return
         list.postDelayed({
             if ((list.adapter?.itemCount ?: 0) > t && lm().findFirstVisibleItemPosition() != t) {
-                turnTo(t, tries - 1)
+                if (tries <= 2) smoothTurn(t) else turnTo(t, tries - 1)
+                if (tries <= 2) turnTo(t, tries - 1)
             }
         }, 60)
+    }
+
+    /** Mesmo tipo de rolagem do deslize (que funciona durante o processamento): rápida, até a página. */
+    private fun smoothTurn(t: Int) {
+        val first = lm().findFirstVisibleItemPosition()
+        val v = lm().findViewByPosition(first) ?: return
+        if (isBook) {
+            // a esquerda da página de destino, em relação à lista
+            val dx = v.left + (t - first) * list.width
+            if (dx != 0) list.smoothScrollBy(dx, 0, null, 120)
+        } else if (t == first) {
+            val dy = v.top - list.paddingTop
+            if (dy != 0) list.smoothScrollBy(0, dy, null, 120)
+        }
     }
 
     /** Toque na borda: vai para a página seguinte (+1) ou anterior (-1), em qualquer modo e formato. */
@@ -1320,7 +1338,11 @@ class MainActivity : AppCompatActivity() {
             // a nova página mantém a posição lateral (zoom e centralização) da anterior
             return
         }
-        val cur = currentPage()
+        // página atual = a que ocupa mais da tela (não depende do auxiliar de encaixe)
+        var cur = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
+        val fv = lm().findViewByPosition(cur)
+        if (fv != null && fv.right < list.width / 2) cur++
+        cur = cur.coerceIn(0, count - 1)
         val t = (cur + delta).coerceIn(0, count - 1)
         if (t == cur) return
         turnTo(t)
@@ -1542,7 +1564,7 @@ class MainActivity : AppCompatActivity() {
     private fun positionProgress() {
         val ind = pageIndicator.layoutParams as FrameLayout.LayoutParams
         val h = if (pageIndicator.visibility == View.VISIBLE) pageIndicator.height else 0
-        val nb = ind.bottomMargin + h + (if (h > 0) dp(4) else 0)
+        val nb = ind.bottomMargin + h
         val lp = progressView.layoutParams as FrameLayout.LayoutParams
         if (lp.bottomMargin != nb) {
             lp.bottomMargin = nb
