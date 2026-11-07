@@ -137,6 +137,13 @@ class PagerLayoutManager(context: Context, orientation: Int) :
     LinearLayoutManager(context, orientation, false) {
     var userScrollEnabled = true
     override fun canScrollHorizontally(): Boolean = userScrollEnabled && super.canScrollHorizontally()
+
+    // o texto selecionável do Refluxo pede foco a cada atualização da página; com isso a lista
+    // rolava de volta para a página que estava em foco e desfazia a troca de página pelo toque
+    override fun requestChildRectangleOnScreen(
+        parent: RecyclerView, child: View, rect: android.graphics.Rect,
+        immediate: Boolean, focusedChildVisible: Boolean
+    ): Boolean = false
 }
 
 /**
