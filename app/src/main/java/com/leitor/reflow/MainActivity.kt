@@ -790,9 +790,10 @@ class MainActivity : AppCompatActivity() {
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM or Gravity.START
-            ).apply { leftMargin = dp(10); bottomMargin = dp(14) }
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            ).apply { bottomMargin = dp(14) }
         )
+        pageIndicator.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> positionProgress() }
 
         // barra da seleção de texto (modo Original)
         selBar = LinearLayout(this).apply {
@@ -1241,6 +1242,7 @@ class MainActivity : AppCompatActivity() {
         val n = list.adapter?.itemCount ?: 0
         if (n == 0 || !barVisible) {
             pageIndicator.visibility = View.GONE
+            positionProgress()
             return
         }
         val p = (currentPage() + 1).coerceIn(1, n)
@@ -1292,6 +1294,20 @@ class MainActivity : AppCompatActivity() {
         return t.coerceIn(0, count - 1)
     }
 
+    /**
+     * Vai para a página [t] e confere em seguida: durante o processamento do Refluxo a lista é
+     * atualizada várias vezes e o pedido de rolagem podia se perder (o toque lateral falhava).
+     */
+    private fun turnTo(t: Int, tries: Int = 4) {
+        lm().scrollToPositionWithOffset(t, 0)
+        if (tries <= 0) return
+        list.postDelayed({
+            if ((list.adapter?.itemCount ?: 0) > t && lm().findFirstVisibleItemPosition() != t) {
+                turnTo(t, tries - 1)
+            }
+        }, 60)
+    }
+
     /** Toque na borda: vai para a página seguinte (+1) ou anterior (-1), em qualquer modo e formato. */
     private fun pageStep(delta: Int) {
         val count = list.adapter?.itemCount ?: 0
@@ -1300,14 +1316,14 @@ class MainActivity : AppCompatActivity() {
             val first = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
             val t = verticalTarget(delta, count)
             if (t == first && delta > 0) return
-            lm().scrollToPositionWithOffset(t, 0)
+            turnTo(t)
             // a nova página mantém a posição lateral (zoom e centralização) da anterior
             return
         }
         val cur = currentPage()
         val t = (cur + delta).coerceIn(0, count - 1)
         if (t == cur) return
-        lm().scrollToPositionWithOffset(t, 0)
+        turnTo(t)
         // modo original: mantém a centralização (deslocamento horizontal) ajustada no zoom;
         // só no refluxo volta ao início
         if (isBook && reflowMode) hScroll.scrollTo(0, 0)
@@ -1507,6 +1523,7 @@ class MainActivity : AppCompatActivity() {
     /** Mostra o andamento do processamento do Refluxo; ao terminar, avisa e some em seguida. */
     private fun setReflowProgress(done: Int, total: Int) {
         main.removeCallbacks(hideProgressRunnable)
+        positionProgress()
         if (total <= 0) {
             progressView.visibility = View.GONE
             return
@@ -1518,6 +1535,18 @@ class MainActivity : AppCompatActivity() {
         } else {
             progressView.text = "Processando refluxo… ${done * 100 / total}%"
             progressView.visibility = View.VISIBLE
+        }
+    }
+
+    /** Mantém o indicador de progresso colado acima do botão da página, centralizado. */
+    private fun positionProgress() {
+        val ind = pageIndicator.layoutParams as FrameLayout.LayoutParams
+        val h = if (pageIndicator.visibility == View.VISIBLE) pageIndicator.height else 0
+        val nb = ind.bottomMargin + h + (if (h > 0) dp(4) else 0)
+        val lp = progressView.layoutParams as FrameLayout.LayoutParams
+        if (lp.bottomMargin != nb) {
+            lp.bottomMargin = nb
+            progressView.layoutParams = lp
         }
     }
 
@@ -1543,6 +1572,7 @@ class MainActivity : AppCompatActivity() {
         reflowAdapter.notifyDataSetChanged()
         status.text = "Abrindo…"
         progressView.text = "Processando refluxo… 0%"
+        positionProgress()
         progressView.visibility = View.VISIBLE
         val cacheFile = reflowCacheFile(currentKey)
         val startHint = pendingPage // página em que você está: é extraída primeiro
