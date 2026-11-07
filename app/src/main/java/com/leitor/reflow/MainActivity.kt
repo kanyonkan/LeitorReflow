@@ -1053,17 +1053,15 @@ class MainActivity : AppCompatActivity() {
      */
     private fun centerPage() {
         if (currentUri == null) return
-        if (reflowMode) {
-            Toast.makeText(this, "Centralizar só funciona no modo Original.", Toast.LENGTH_SHORT).show()
-            return
-        }
         if (list.layoutManager == null || (list.adapter?.itemCount ?: 0) == 0) return
         hScroll.fling(0)
+        // no Refluxo não há zoom lateral: só alinha a página à tela
+        val z = if (reflowMode) 1f else zoom
         // sentido horizontal: com zoom, o meio da página; sem zoom não há deslocamento lateral
-        val cx = if (zoom > 1f) ((listWidth - hScroll.width) / 2).coerceAtLeast(0) else 0
+        val cx = if (z > 1f) ((listWidth - hScroll.width) / 2).coerceAtLeast(0) else 0
         hScroll.smoothScrollTo(cx, 0)
         if (isBook) {
-            if (zoom > 1f) {
+            if (z > 1f) {
                 // sentido vertical: cada página tem a sua rolagem vertical; leva ao meio dela
                 val sv = lm().findViewByPosition(currentPage()) as? ScrollView
                 val child = sv?.getChildAt(0)
@@ -1081,7 +1079,7 @@ class MainActivity : AppCompatActivity() {
             val v = list.findChildViewUnder(list.width / 2f, list.height / 2f) ?: return
             val top = list.paddingTop
             val viewportH = list.height - top - list.paddingBottom
-            val dy = if (zoom > 1f && v.height > viewportH) {
+            val dy = if (z > 1f && v.height > viewportH) {
                 (v.top + v.height / 2) - (top + viewportH / 2) // centro da página no centro da tela
             } else {
                 v.top - top // alinha ao topo da página
@@ -1308,29 +1306,15 @@ class MainActivity : AppCompatActivity() {
      * Vai para a página [t] e confere em seguida: durante o processamento do Refluxo a lista é
      * atualizada várias vezes e o pedido de rolagem podia se perder (o toque lateral falhava).
      */
-    private fun turnTo(t: Int, tries: Int = 4) {
+    private fun turnTo(t: Int) {
         lm().scrollToPositionWithOffset(t, 0)
-        if (tries <= 0) return
+        // confere uma vez: se a lista ficou parada fora da página, repete o pedido
         list.postDelayed({
-            if ((list.adapter?.itemCount ?: 0) > t && lm().findFirstVisibleItemPosition() != t) {
-                if (tries <= 2) smoothTurn(t) else turnTo(t, tries - 1)
-                if (tries <= 2) turnTo(t, tries - 1)
-            }
-        }, 60)
-    }
-
-    /** Mesmo tipo de rolagem do deslize (que funciona durante o processamento): rápida, até a página. */
-    private fun smoothTurn(t: Int) {
-        val first = lm().findFirstVisibleItemPosition()
-        val v = lm().findViewByPosition(first) ?: return
-        if (isBook) {
-            // a esquerda da página de destino, em relação à lista
-            val dx = v.left + (t - first) * list.width
-            if (dx != 0) list.smoothScrollBy(dx, 0, null, 120)
-        } else if (t == first) {
-            val dy = v.top - list.paddingTop
-            if (dy != 0) list.smoothScrollBy(0, dy, null, 120)
-        }
+            if ((list.adapter?.itemCount ?: 0) > t &&
+                list.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
+                lm().findFirstVisibleItemPosition() != t
+            ) lm().scrollToPositionWithOffset(t, 0)
+        }, 80)
     }
 
     /** Toque na borda: vai para a página seguinte (+1) ou anterior (-1), em qualquer modo e formato. */
