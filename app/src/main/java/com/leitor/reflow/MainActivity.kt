@@ -1325,8 +1325,13 @@ class MainActivity : AppCompatActivity() {
             val first = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
             val t = verticalTarget(delta, count)
             if (t == first && delta > 0) return
-            turnTo(t)
             // a nova página mantém a posição lateral (zoom e centralização) da anterior
+            val tv = lm().findViewByPosition(t)
+            if (tv != null) {
+                slideBy(0, tv.top - list.paddingTop, t, false)
+            } else {
+                turnTo(t)
+            }
             return
         }
         // página atual = a que ocupa mais da tela (não depende do auxiliar de encaixe)
@@ -1336,25 +1341,32 @@ class MainActivity : AppCompatActivity() {
         cur = cur.coerceIn(0, count - 1)
         val t = (cur + delta).coerceIn(0, count - 1)
         if (t == cur) return
-        if (reflowMode && !pagesComplete) {
-            // durante o processamento do Refluxo o salto direto se perdia no formato horizontal;
-            // usa a mesma rolagem do deslize (que funciona), e o encaixe leva a página ao lugar
-            val v0 = lm().findViewByPosition(lm().findFirstVisibleItemPosition())
-            if (v0 != null) {
-                val first = lm().findFirstVisibleItemPosition()
-                val dx = v0.left + (t - first) * list.width
-                snapAfterFling = true
-                list.smoothScrollBy(dx, 0, null, 140)
-                list.postDelayed({
-                    if (list.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
-                        lm().findFirstVisibleItemPosition() != t
-                    ) lm().scrollToPositionWithOffset(t, 0)
-                }, 450)
-            } else turnTo(t)
-        } else turnTo(t)
+        val first = lm().findFirstVisibleItemPosition()
+        val v0 = lm().findViewByPosition(first)
+        if (v0 != null) {
+            slideBy(v0.left + (t - first) * list.width, 0, t, true)
+        } else {
+            turnTo(t)
+        }
         // modo original: mantém a centralização (deslocamento horizontal) ajustada no zoom;
         // só no refluxo volta ao início
         if (isBook && reflowMode) hScroll.scrollTo(0, 0)
+    }
+
+    /**
+     * Troca de página pelo toque: um rápido deslizamento (a mesma rolagem do deslize, que não se perde
+     * quando a lista está sendo atualizada) até a página [t]; se não chegar, salta direto.
+     */
+    private fun slideBy(dx: Int, dy: Int, t: Int, snap: Boolean) {
+        if (dx == 0 && dy == 0) return
+        snapAfterFling = snap
+        list.smoothScrollBy(dx, dy, null, 140)
+        list.postDelayed({
+            if ((list.adapter?.itemCount ?: 0) > t &&
+                list.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
+                lm().findFirstVisibleItemPosition() != t
+            ) lm().scrollToPositionWithOffset(t, 0)
+        }, 450)
     }
 
     /** Vira a página no formato horizontal (usado com zoom no modo original). */
