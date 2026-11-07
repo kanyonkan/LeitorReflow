@@ -480,7 +480,10 @@ class MainActivity : AppCompatActivity() {
 
             // troca de página por deslize desativada: só o toque nas bordas troca de página
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean = false
-        })
+        }).also {
+            // toque um pouco demorado não vira "toque longo" (que cancelava o toque lateral no Refluxo)
+            it.setIsLongpressEnabled(false)
+        }
     }
 
     /** O toque caiu sobre o menu, o número da página ou a barra de seleção: não é toque na página. */
@@ -575,6 +578,14 @@ class MainActivity : AppCompatActivity() {
         if (ev.pointerCount > 1) overInvalid = true
         scaleDetector.onTouchEvent(ev)
         if (scaling) {
+            // o detector de toque não pode ficar com um gesto "pela metade" (isso fazia o
+            // toque lateral seguinte falhar até que um deslize o reiniciasse)
+            if (!cancelSent) {
+                val tc = MotionEvent.obtain(ev)
+                tc.action = MotionEvent.ACTION_CANCEL
+                tapDetector.onTouchEvent(tc)
+                tc.recycle()
+            }
             // durante a pinça, o resto da tela não recebe os toques
             if (!cancelSent) {
                 cancelSent = true
