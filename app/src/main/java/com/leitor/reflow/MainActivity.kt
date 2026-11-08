@@ -1454,7 +1454,9 @@ class MainActivity : AppCompatActivity() {
             // no Refluxo vertical, enquanto o texto ainda está sendo processado, as páginas mudam de
             // altura o tempo todo: aí o salto direto (que funciona) vale mais que o deslizamento
             val loadingVertical = reflowMode && !pagesComplete
-            if (tv != null && !loadingVertical) {
+            if (loadingVertical) {
+                glideToPage(t)
+            } else if (tv != null) {
                 slideBy(0, tv.top - pageTopY(), t, false)
             } else {
                 turnTo(t)
@@ -1498,6 +1500,31 @@ class MainActivity : AppCompatActivity() {
         list.postDelayed({
             if (alignTarget == t && list.scrollState == RecyclerView.SCROLL_STATE_IDLE) alignToPage(t)
         }, 450)
+    }
+
+    /**
+     * Rolagem um pouco mais lenta até a página [t] (Refluxo vertical em processamento): o deslizador
+     * recalcula a distância a cada quadro, então acompanha as páginas que mudam de altura enquanto o
+     * texto é processado. Ao parar, o alinhamento exato é conferido (alignToPage).
+     */
+    private fun glideToPage(t: Int) {
+        val sc = object : LinearSmoothScroller(this) {
+            override fun getVerticalSnapPreference() = SNAP_TO_START
+            override fun calculateDyToMakeVisible(view: View, snapPreference: Int): Int {
+                val l = layoutManager ?: return 0
+                if (!l.canScrollVertically()) return 0
+                val lp = view.layoutParams as RecyclerView.LayoutParams
+                return pageTopY() - (l.getDecoratedTop(view) - lp.topMargin)
+            }
+            override fun calculateSpeedPerPixel(displayMetrics: android.util.DisplayMetrics) = 0.12f
+            override fun calculateTimeForDeceleration(dx: Int) = 260
+        }
+        sc.targetPosition = t
+        alignTarget = t
+        lm().startSmoothScroll(sc)
+        list.postDelayed({
+            if (alignTarget == t && list.scrollState == RecyclerView.SCROLL_STATE_IDLE) alignToPage(t)
+        }, 900)
     }
 
     /** Página de destino de uma troca por toque: ao parar a rolagem, ajusta o alinhamento exato. */
