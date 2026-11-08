@@ -660,36 +660,20 @@ class MainActivity : AppCompatActivity() {
         }
         tapDetector.onTouchEvent(ev)
         val zoomedBook = isBook && !reflowMode && zoom > 1f
-        if (zoomedBook && ev.actionMasked == MotionEvent.ACTION_MOVE) {
-            // a página ampliada já está na borda e o dedo continua puxando para o mesmo lado:
-            // soma esse "excesso" (antes de a rolagem lateral tratar este movimento)
-            val dxm = ev.x - overLastX
-            overLastX = ev.x
-            when {
-                dxm < 0f && !hScroll.canScrollHorizontally(1) -> overAcc = if (overAcc > 0f) dxm else overAcc + dxm
-                dxm > 0f && !hScroll.canScrollHorizontally(-1) -> overAcc = if (overAcc < 0f) dxm else overAcc + dxm
-                dxm != 0f -> overAcc = 0f
+        if (zoomedBook) {
+            // arrasto para os lados com zoom: as páginas formam uma "faixa" contínua (ver handleStrip)
+            when (handleStrip(ev)) {
+                1 -> return true
+                2 -> {
+                    val c = MotionEvent.obtain(ev)
+                    c.action = MotionEvent.ACTION_CANCEL
+                    super.dispatchTouchEvent(c)
+                    c.recycle()
+                    return true
+                }
             }
         }
         val handled = super.dispatchTouchEvent(ev)
-        if (zoomedBook && ev.actionMasked == MotionEvent.ACTION_UP &&
-            !overInvalid && !scaling && !pinchedRecently && !selDragging &&
-            abs(overAcc) >= dp(56)
-        ) {
-            // só troca se a página JÁ estava no canto quando o dedo encostou (esquerda = próxima);
-            // se estava no meio, o arrasto só levou a página até o canto
-            val dir = if (overAcc < 0f) 1 else -1
-            val atCornerAtDown = if (dir > 0) !canPanRightAtDown else !canPanLeftAtDown
-            if (atCornerAtDown) {
-                turnPage(dir)
-                // a nova página entra centralizada, com o mesmo zoom
-                val cx = ((listWidth - hScroll.width) / 2).coerceAtLeast(0)
-                hScroll.fling(0)
-                hScroll.scrollTo(cx, 0)
-                hScroll.post { hScroll.scrollTo(cx, 0) }
-            }
-            overAcc = 0f
-        }
         if (turnAfterUp != 0 && ev.actionMasked == MotionEvent.ACTION_UP) {
             // deslize rápido: desfaz o pequeno deslocamento do arrasto e cancela a inércia,
             // para a próxima página entrar na mesma posição horizontal
@@ -700,6 +684,176 @@ class MainActivity : AppCompatActivity() {
             hScroll.post { hScroll.scrollTo(x, 0) }
         }
         return handled
+    }
+
+    // ------------------------------------------------------------------ faixa contínua (Original + horizontal + zoom)
+
+    private var stripTracking = false
+    private var stripActive = false
+    private var stripDownX = 0f
+    private var stripDownY = 0f
+    private var stripLastX = 0f
+    private var stripS = 0f
+    private var stripVt: android.view.VelocityTracker? = null
+    private var stripAnim: android.animation.ValueAnimator? = null
+
+    /**
+     * Com zoom no formato horizontal, as páginas formam uma faixa contínua: o arrasto anda dentro da
+     * página e segue direto para a próxima, e o deslize rápido corre várias páginas conforme a
+     * velocidade (como no formato vertical). Ao parar entre duas páginas, encaixa na mais próxima,
+     * centralizada. Retorna 0 = deixa o gesto seguir, 1 = tratado aqui, 2 = tratado, e os demais
+     * recebem um cancelamento (o arrasto passou a ser nosso).
+     */
+    private fun handleStrip(ev: MotionEvent): Int {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                stripAnim?.cancel() // tocar na tela interrompe a corrida
+                stripAnim = null
+                stripActive = false
+                stripTracking = !selDragging
+                stripDownX = ev.x
+                stripDownY = ev.y
+                stripVt?.recycle()
+                stripVt = android.view.VelocityTracker.obtain().also { it.addMovement(ev) }
+                return 0
+            }
+            MotionEvent.ACTION_MOVE -> {
+                stripVt?.addMovement(ev)
+                if (!stripActive) {
+                    if (!stripTracking || ev.pointerCount > 1 || selDragging) return 0
+                    val dx = ev.x - stripDownX
+                    val dy = ev.y - stripDownY
+                    val slop = android.view.ViewConfiguration.get(this).scaledTouchSlop
+                    if (abs(dx) > slop && abs(dx) > 2f * abs(dy)) {
+                        val s0 = currentStrip() ?: return 0
+                        stripS = s0
+                        stripLastX = ev.x
+                        stripActive = true
+                        return 2
+                    }
+                    return 0
+                }
+                if (ev.pointerCount > 1) return 1
+                stripS -= ev.x - stripLastX
+                stripLastX = ev.x
+                applyStrip()
+                return 1
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val vt = stripVt
+                stripVt = null
+                stripTracking = false
+                if (!stripActive) {
+                    vt?.recycle()
+                    return 0
+                }
+                stripActive = false
+                var vx = 0f
+                if (vt != null) {
+                    vt.addMovement(ev)
+                    vt.computeCurrentVelocity(1000)
+                    vx = vt.xVelocity
+                    vt.recycle()
+                }
+                if (ev.actionMasked == MotionEvent.ACTION_CANCEL) vx = 0f
+                flingStrip(-vx)
+                return 1
+            }
+        }
+        return if (stripActive) 1 else 0
+    }
+
+    /** Posição atual na faixa (borda esquerda da janela), a partir do estado da lista e da rolagem lateral. */
+    private fun currentStrip(): Float? {
+        val n = list.adapter?.itemCount ?: 0
+        if (n == 0 || list.width <= 0) return null
+        val l = list.width.toFloat()
+        val w = hScroll.width.toFloat()
+        val p0 = lm().findFirstVisibleItemPosition()
+        if (p0 < 0) return null
+        val v = lm().findViewByPosition(p0) ?: return null
+        val rem = (-v.left).coerceAtLeast(0)
+        return if (rem <= 1) p0 * l + hScroll.scrollX else p0 * l + rem + (l - w)
+    }
+
+    /** Aplica [stripS]: página (e deslocamento entre duas páginas) na lista e posição lateral na rolagem. */
+    private fun applyStrip() {
+        val n = list.adapter?.itemCount ?: 0
+        if (n == 0 || list.width <= 0) return
+        val l = list.width.toFloat()
+        val w = hScroll.width.toFloat()
+        val maxS = (n * l - w).coerceAtLeast(0f)
+        stripS = stripS.coerceIn(0f, maxS)
+        val p = kotlin.math.floor(stripS / l).toInt().coerceIn(0, n - 1)
+        val right = stripS + w
+        val rem: Float
+        val x: Float
+        if (right <= (p + 1) * l + 0.5f) {
+            rem = 0f
+            x = stripS - p * l
+        } else {
+            rem = right - (p + 1) * l
+            x = l - w
+        }
+        hScroll.scrollTo(x.toInt().coerceAtLeast(0), 0)
+        lm().scrollToPositionWithOffset(p, -rem.toInt())
+    }
+
+    private fun flingStrip(v: Float) {
+        if (abs(v) < 300f) {
+            snapStrip()
+            return
+        }
+        val dist = v * VERTICAL_FLING_SECONDS
+        val ms = (600f + abs(v) * 0.15f).coerceAtMost(2500f).toLong()
+        val from = stripS
+        runStripAnim(from, from + dist, ms, android.view.animation.DecelerateInterpolator(2f)) { snapStrip() }
+    }
+
+    private fun runStripAnim(
+        from: Float, to: Float, ms: Long, ip: android.animation.TimeInterpolator, done: () -> Unit
+    ) {
+        stripAnim?.cancel()
+        val a = android.animation.ValueAnimator.ofFloat(from, to)
+        a.duration = ms
+        a.interpolator = ip
+        a.addUpdateListener {
+            stripS = it.animatedValue as Float
+            applyStrip()
+        }
+        var cancelled = false
+        a.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationCancel(animation: android.animation.Animator) {
+                cancelled = true
+            }
+
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                if (!cancelled) done()
+            }
+        })
+        stripAnim = a
+        a.start()
+    }
+
+    /** Parou entre duas páginas: encaixa na mais próxima, com a página centralizada (mesmo zoom). */
+    private fun snapStrip() {
+        val n = list.adapter?.itemCount ?: 0
+        if (n == 0 || list.width <= 0) return
+        val l = list.width.toFloat()
+        val w = hScroll.width.toFloat()
+        val p = kotlin.math.floor(stripS / l).toInt().coerceIn(0, n - 1)
+        val straddle = stripS + w > (p + 1) * l + 1f && p < n - 1
+        if (!straddle) {
+            updatePageIndicator()
+            saveCenter()
+            return
+        }
+        val pt = kotlin.math.floor((stripS + w / 2f) / l).toInt().coerceIn(0, n - 1)
+        val target = pt * l + ((l - w) / 2f).coerceAtLeast(0f)
+        runStripAnim(stripS, target, 160L, android.view.animation.DecelerateInterpolator()) {
+            updatePageIndicator()
+            saveCenter()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
