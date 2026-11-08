@@ -266,6 +266,10 @@ class PageImageView(context: Context) : ImageView(context) {
 class MainActivity : AppCompatActivity() {
 
     private companion object {
+        const val MAX_WINDOWS = 3 // PDFs abertos ao mesmo tempo (uma janela do Android para cada)
+        @Volatile var liveWindows = 0 // janelas do app vivas neste processo
+        @Volatile var windowsWithPdf = 0 // dessas, as que já têm um PDF aberto
+        const val EXTRA_NEW_WINDOW = "novaJanela" // aberta por este app: não pergunta de novo
         const val ZOOM_MAX = 3.75f // 15 níveis de 0.25 (eram 10: 2.5f)
         const val ZOOM_STEP = 0.25f
         // velocidade mínima (px/s) para o deslize virar a página; abaixo disso só move a página
@@ -369,6 +373,7 @@ class MainActivity : AppCompatActivity() {
     private var keepZoom = false // deste PDF: lembrar zoom/tamanho do texto e a centralização
     private var keepMode = false // deste PDF: lembrar o modo (Original/Refluxo)
     private var keepLayout = false // deste PDF: lembrar o deslizamento (Vertical/Horizontal)
+    private var keepNight = false // deste PDF: lembrar Dia/Noite
     private var barVisible = true
     private var loadToken = 0
     private var listWidth = 0
@@ -424,7 +429,54 @@ class MainActivity : AppCompatActivity() {
     )
 
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) open(uri)
+        if (uri != null) {
+            try {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Exception) {
+            }
+            chooseWhereToOpen(uri)
+        }
+    }
+
+    /** Com um PDF já aberto, pergunta se o novo vai para outra janela ou substitui o desta. */
+    private fun chooseWhereToOpen(uri: Uri) {
+        if (currentUri == null || currentUri == uri) {
+            open(uri)
+            return
+        }
+        val canNew = liveWindows < MAX_WINDOWS
+        val b = AlertDialog.Builder(this)
+            .setTitle("Abrir este PDF:")
+            .setMessage(
+                if (canNew) "Em uma nova janela, o PDF atual continua aberto. Nesta janela, o PDF atual é " +
+                    "fechado (as configurações dele ficam guardadas)."
+                else "Já há $MAX_WINDOWS PDFs abertos. Para abrir outro, ele substitui o desta janela " +
+                    "(as configurações do atual ficam guardadas), ou feche uma das outras janelas."
+            )
+            .setNegativeButton("Cancelar", null)
+            .setNeutralButton("Nesta janela") { _, _ ->
+                savePage(true)
+                saveCenter(true)
+                open(uri)
+            }
+        if (canNew) b.setPositiveButton("Nova janela") { _, _ -> openInNewWindow(uri) }
+        b.show()
+    }
+
+    private fun openInNewWindow(uri: Uri) {
+        val i = Intent(this, MainActivity::class.java).apply {
+            data = uri
+            putExtra(EXTRA_NEW_WINDOW, true)
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_DOCUMENT or Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        try {
+            startActivity(i)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Não foi possível abrir a nova janela.", Toast.LENGTH_LONG).show()
+        }
     }
 
     // toque no centro mostra/esconde a barra; deslize rápido para os lados vira a página
@@ -651,9 +703,12 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         PDFBoxResourceLoader.init(applicationContext)
+        liveWindows++
+        // várias janelas dividem a mesma memória: cada nova usa um cache de imagens menor
+        bmpCache.resize((Runtime.getRuntime().maxMemory() / (6L * liveWindows)).toInt().coerceAtLeast(8 * 1024 * 1024))
 
         val prefs = getSharedPreferences("leitor", MODE_PRIVATE)
-        night = prefs.getBoolean("night", false)
+        night = false // todo PDF novo abre no modo Dia; o "Lembrar Dia/Noite" é por PDF (ver open)
         // todo PDF novo começa no padrão; os "Lembrar..." são guardados por PDF (ver open)
         textSp = TEXT_DEFAULT
         zoom = 1f
@@ -873,7 +928,38 @@ class MainActivity : AppCompatActivity() {
         updateLabels()
         ViewCompat.requestApplyInsets(root)
 
-        intent?.data?.let { open(it) }
+        val first = intent?.data
+        if (first != null) {
+            if (savedInstanceState == null && !intent.getBooleanExtra(EXTRA_NEW_WINDOW, false) &&
+                windowsWithPdf > 0
+            ) askForExternalPdf(first)
+            else open(first)
+        }
+    }
+
+    private var hasPdf = false
+
+    /**
+     * PDF aberto de fora do app (toque no arquivo) quando já há outro aberto: o Android o põe numa tela
+     * nova sobre a anterior; aqui o usuário escolhe uma janela separada ou desiste.
+     */
+    private fun askForExternalPdf(uri: Uri) {
+        val canNew = liveWindows - 1 < MAX_WINDOWS // esta tela será trocada pela nova janela
+        val b = AlertDialog.Builder(this)
+            .setTitle("Abrir este PDF:")
+            .setCancelable(false)
+        if (canNew) {
+            b.setMessage("Em uma nova janela, o PDF que já está aberto continua aberto.")
+                .setPositiveButton("Nova janela") { _, _ ->
+                    openInNewWindow(uri)
+                    finish() // esta tela de passagem fecha; a nova janela fica separada
+                }
+                .setNegativeButton("Cancelar") { _, _ -> finish() }
+        } else {
+            b.setMessage("Já há $MAX_WINDOWS PDFs abertos. Feche um deles para abrir outro.")
+                .setPositiveButton("Entendi") { _, _ -> finish() }
+        }
+        b.show()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -897,6 +983,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (liveWindows > 0) liveWindows--
+        if (hasPdf && windowsWithPdf > 0) windowsWithPdf--
         loadToken++
         closeRenderer()
         renderExec.shutdownNow()
@@ -976,7 +1064,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleTheme() {
         night = !night
-        getSharedPreferences("leitor", MODE_PRIVATE).edit().putBoolean("night", night).apply()
+        saveDocSettings()
         applyTheme()
         updateLabels()
     }
@@ -1010,6 +1098,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (keepMode) e.putBoolean(dk("reflow"), reflowMode)
         if (keepLayout) e.putInt(dk("layout"), pageLayout)
+        if (keepNight) e.putBoolean(dk("night"), night)
         e.apply()
     }
 
@@ -1132,10 +1221,15 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putBoolean(dk("remL"), c).apply()
             if (c) saveDocSettings()
         })
+        box.addView(row("Lembrar Dia/Noite", keepNight) { c ->
+            keepNight = c
+            prefs.edit().putBoolean(dk("remN"), c).apply()
+            if (c) saveDocSettings()
+        })
         box.addView(TextView(this).apply {
             text = "Vale só para este PDF. Com \"Sim\", ao abrir este PDF de novo ele volta como você " +
                 "deixou. Com \"Não\", ele começa no padrão: primeira página, zoom x1 (e texto no " +
-                "tamanho padrão) e sem centralização, modo Original e deslizamento na horizontal. PDFs novos sempre " +
+                "tamanho padrão) e sem centralização, modo Original, deslizamento na horizontal e modo Dia. PDFs novos sempre " +
                 "começam com tudo em \"Não\"."
             textSize = 12f
             alpha = 0.7f
@@ -1245,8 +1339,11 @@ class MainActivity : AppCompatActivity() {
         return if (p != RecyclerView.NO_POSITION) p else lm().findFirstVisibleItemPosition().coerceAtLeast(0)
     }
 
+    @Volatile private var reflowFocus = 0 // página em que o usuário está (prioridade do processamento)
+
     private fun updatePageIndicator() {
         schedulePageSave()
+        if (reflowMode && !pagesComplete && (list.adapter?.itemCount ?: 0) > 0) reflowFocus = pageToSave()
         val n = list.adapter?.itemCount ?: 0
         if (n == 0 || !barVisible) {
             pageIndicator.visibility = View.GONE
@@ -1423,6 +1520,8 @@ class MainActivity : AppCompatActivity() {
         }
         // nome para exibir, sem a extensão .pdf
         currentName = (name ?: uri.lastPathSegment ?: "").replace(Regex("(?i)\\.pdf$"), "")
+        // o nome do PDF aparece na lista de apps recentes, para distinguir as janelas
+        try { setTaskDescription(android.app.ActivityManager.TaskDescription(currentName)) } catch (_: Throwable) {}
         return "pg_" + (name ?: uri.toString()) + "|" + size
     }
 
@@ -1493,6 +1592,10 @@ class MainActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ abrir PDF
 
     private fun open(uri: Uri) {
+        if (!hasPdf) {
+            hasPdf = true
+            windowsWithPdf++
+        }
         savePage() // guarda a página do arquivo anterior
         saveCenter() // ... e a centralização dele
         if (currentUri != uri) {
@@ -1516,6 +1619,7 @@ class MainActivity : AppCompatActivity() {
         keepZoom = dp0.getBoolean(dk("remZ"), false)
         keepMode = dp0.getBoolean(dk("remM"), false)
         keepLayout = dp0.getBoolean(dk("remL"), false)
+        keepNight = dp0.getBoolean(dk("remN"), false)
         pendingPage = if (rememberPage) dp0.getInt(currentKey, -1) else -1
         if (pagesUri != uri) {
             pages.clear()
@@ -1530,9 +1634,11 @@ class MainActivity : AppCompatActivity() {
         val newLayout = if (keepLayout) dp0.getInt(dk("layout"), 1).coerceIn(0, 1) else 1
         val newZoom = if (keepZoom) dp0.getFloat(dk("zoom"), 1f).coerceIn(1f, ZOOM_MAX) else 1f
         val newText = if (keepZoom) dp0.getFloat(dk("textSp"), TEXT_DEFAULT).coerceIn(TEXT_MIN, TEXT_MAX) else TEXT_DEFAULT
+        val newNight = keepNight && dp0.getBoolean(dk("night"), false)
         val changed = newReflow != reflowMode || newLayout != pageLayout ||
-            newZoom != zoom || newText != textSp
+            newZoom != zoom || newText != textSp || newNight != night
         reflowMode = newReflow
+        night = newNight
         pageLayout = newLayout
         zoom = newZoom
         textSp = newText
@@ -1654,8 +1760,23 @@ class MainActivity : AppCompatActivity() {
                 val local = arrayOfNulls<PageText>(total)
                 var withText = 0
                 var done = 0
-                for (i in (start until total) + (0 until start)) {
+                // ordem de extração: sempre a página mais próxima de onde você está agora (para a frente
+                // e para trás), acompanhando as trocas de página enquanto o Refluxo é processado
+                reflowFocus = start
+                val finished = BooleanArray(total)
+                for (n in 0 until total) {
                     if (token != loadToken) return@Thread
+                    val f = reflowFocus.coerceIn(0, total - 1)
+                    var sel = -1
+                    var d = 0
+                    while (sel < 0 && d < total) {
+                        if (f + d < total && !finished[f + d]) sel = f + d
+                        else if (f - d >= 0 && !finished[f - d]) sel = f - d
+                        d++
+                    }
+                    if (sel < 0) break
+                    finished[sel] = true
+                    val i = sel
                     val before = targets.size
                     // o documento é compartilhado: a trava é solta a cada página
                     val raw = synchronized(docLock) {
