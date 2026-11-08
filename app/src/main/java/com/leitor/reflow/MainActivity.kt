@@ -1768,11 +1768,11 @@ class MainActivity : AppCompatActivity() {
                     if (token != loadToken) return@Thread
                     val f = reflowFocus.coerceIn(0, total - 1)
                     var sel = -1
-                    var d = 0
-                    while (sel < 0 && d < total) {
-                        if (f + d < total && !finished[f + d]) sel = f + d
-                        else if (f - d >= 0 && !finished[f - d]) sel = f - d
-                        d++
+                    var dist = 0
+                    while (sel < 0 && dist < total) {
+                        if (f + dist < total && !finished[f + dist]) sel = f + dist
+                        else if (f - dist >= 0 && !finished[f - dist]) sel = f - dist
+                        dist++
                     }
                     if (sel < 0) break
                     finished[sel] = true
