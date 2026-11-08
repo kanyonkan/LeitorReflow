@@ -1410,7 +1410,7 @@ class MainActivity : AppCompatActivity() {
     private fun verticalTarget(delta: Int, count: Int): Int {
         val first = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
         val v = lm().findViewByPosition(first)
-        val partial = v != null && v.top < list.paddingTop - dp(8)
+        val partial = v != null && v.top < pageTopY() - dp(8)
         val t = when {
             delta > 0 -> first + delta
             partial -> first + delta + 1
@@ -1423,14 +1423,21 @@ class MainActivity : AppCompatActivity() {
      * Vai para a página [t] e confere em seguida: durante o processamento do Refluxo a lista é
      * atualizada várias vezes e o pedido de rolagem podia se perder (o toque lateral falhava).
      */
+    /**
+     * Onde o começo da página fica ao trocar de página no formato vertical: no Refluxo, no topo da tela
+     * (a lista tem uma margem de 30 dp acima, que deixava aparecer o fim da página anterior).
+     */
+    private fun pageTopY(): Int = if (reflowMode) 0 else list.paddingTop
+
     private fun turnTo(t: Int) {
-        lm().scrollToPositionWithOffset(t, 0)
+        val off = if (isBook) 0 else pageTopY() - list.paddingTop
+        lm().scrollToPositionWithOffset(t, off)
         // confere uma vez: se a lista ficou parada fora da página, repete o pedido
         list.postDelayed({
             if ((list.adapter?.itemCount ?: 0) > t &&
                 list.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
                 lm().findFirstVisibleItemPosition() != t
-            ) lm().scrollToPositionWithOffset(t, 0)
+            ) lm().scrollToPositionWithOffset(t, off)
         }, 80)
     }
 
@@ -1445,7 +1452,7 @@ class MainActivity : AppCompatActivity() {
             // a nova página mantém a posição lateral (zoom e centralização) da anterior
             val tv = lm().findViewByPosition(t)
             if (tv != null) {
-                slideBy(0, tv.top - list.paddingTop, t, false)
+                slideBy(0, tv.top - pageTopY(), t, false)
             } else {
                 turnTo(t)
             }
@@ -1501,14 +1508,14 @@ class MainActivity : AppCompatActivity() {
         if (t < 0 || (list.adapter?.itemCount ?: 0) <= t) return
         val tv = lm().findViewByPosition(t)
         if (tv == null) {
-            lm().scrollToPositionWithOffset(t, 0)
+            lm().scrollToPositionWithOffset(t, if (isBook) 0 else pageTopY() - list.paddingTop)
             return
         }
         if (isBook) {
             if (reflowMode) (tv as? ScrollView)?.scrollTo(0, 0)
             if (tv.left != 0) list.scrollBy(tv.left, 0)
         } else {
-            val d = tv.top - list.paddingTop
+            val d = tv.top - pageTopY()
             if (abs(d) > 1) list.scrollBy(0, d)
         }
     }
