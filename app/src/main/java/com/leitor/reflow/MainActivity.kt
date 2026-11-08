@@ -1451,7 +1451,10 @@ class MainActivity : AppCompatActivity() {
             if (t == first && delta > 0) return
             // a nova página mantém a posição lateral (zoom e centralização) da anterior
             val tv = lm().findViewByPosition(t)
-            if (tv != null) {
+            // no Refluxo vertical, enquanto o texto ainda está sendo processado, as páginas mudam de
+            // altura o tempo todo: aí o salto direto (que funciona) vale mais que o deslizamento
+            val loadingVertical = reflowMode && !pagesComplete
+            if (tv != null && !loadingVertical) {
                 slideBy(0, tv.top - pageTopY(), t, false)
             } else {
                 turnTo(t)
