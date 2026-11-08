@@ -268,6 +268,7 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val MAX_WINDOWS = 3 // PDFs abertos ao mesmo tempo (uma janela do Android para cada)
         @Volatile var liveWindows = 0 // janelas do app vivas neste processo
+        @Volatile var lastResumed: java.lang.ref.WeakReference<MainActivity>? = null // janela usada por último
         @Volatile var windowsWithPdf = 0 // dessas, as que já têm um PDF aberto
         const val EXTRA_NEW_WINDOW = "novaJanela" // aberta por este app: não pergunta de novo
         const val ZOOM_MAX = 3.75f // 15 níveis de 0.25 (eram 10: 2.5f)
@@ -629,6 +630,7 @@ class MainActivity : AppCompatActivity() {
             overLastX = ev.x
             overInvalid = false
             snapAfterFling = false // tocar na tela interrompe a corrida: sem encaixe
+            alignTarget = -1
             snapStartOff = 0
             if (list.layoutManager != null && (list.adapter?.itemCount ?: 0) > 0) {
                 val v0 = lm().findViewByPosition(lm().findFirstVisibleItemPosition())
@@ -752,6 +754,7 @@ class MainActivity : AppCompatActivity() {
                         snapAfterFling = false
                         snapToNearestPage()
                     }
+                    if (alignTarget >= 0) alignToPage(alignTarget)
                 }
             }
         })
@@ -948,18 +951,35 @@ class MainActivity : AppCompatActivity() {
         val b = AlertDialog.Builder(this)
             .setTitle("Abrir este PDF:")
             .setCancelable(false)
-        if (canNew) {
-            b.setMessage("Em uma nova janela, o PDF que já está aberto continua aberto.")
-                .setPositiveButton("Nova janela") { _, _ ->
-                    openInNewWindow(uri)
-                    finish() // esta tela de passagem fecha; a nova janela fica separada
+            .setMessage(
+                if (canNew) "Em uma nova janela, o PDF que você estava lendo continua aberto. " +
+                    "Nesta janela, ele é fechado e substituído (as configurações dele ficam guardadas)."
+                else "Já há $MAX_WINDOWS PDFs abertos. Nesta janela, o PDF que você estava lendo é " +
+                    "fechado e substituído (as configurações dele ficam guardadas)."
+            )
+            .setNegativeButton("Cancelar") { _, _ -> finish() }
+            .setNeutralButton("Nesta janela") { _, _ ->
+                // fecha o PDF que estava aberto antes (a janela usada por último) e abre este aqui
+                val prev = lastResumed?.get()?.takeIf { it !== this && !it.isFinishing }
+                if (prev != null) {
+                    prev.savePage(true)
+                    prev.saveCenter(true)
+                    prev.finish()
                 }
-                .setNegativeButton("Cancelar") { _, _ -> finish() }
-        } else {
-            b.setMessage("Já há $MAX_WINDOWS PDFs abertos. Feche um deles para abrir outro.")
-                .setPositiveButton("Entendi") { _, _ -> finish() }
+                open(uri)
+            }
+        if (canNew) {
+            b.setPositiveButton("Nova janela") { _, _ ->
+                openInNewWindow(uri)
+                finish() // esta tela de passagem fecha; a nova janela fica separada
+            }
         }
         b.show()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        lastResumed = java.lang.ref.WeakReference(this)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -1457,13 +1477,40 @@ class MainActivity : AppCompatActivity() {
     private fun slideBy(dx: Int, dy: Int, t: Int, snap: Boolean) {
         if (dx == 0 && dy == 0) return
         snapAfterFling = snap
+        alignTarget = t
+        // no Refluxo horizontal a página que entra começa no topo (a rolagem interna da página é zerada)
+        if (reflowMode && isBook) {
+            main.removeCallbacks(resetTopOff)
+            resetPageTop = true
+            main.postDelayed(resetTopOff, 700)
+        }
         list.smoothScrollBy(dx, dy, null, 140)
         list.postDelayed({
-            if ((list.adapter?.itemCount ?: 0) > t &&
-                list.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
-                lm().findFirstVisibleItemPosition() != t
-            ) lm().scrollToPositionWithOffset(t, 0)
+            if (alignTarget == t && list.scrollState == RecyclerView.SCROLL_STATE_IDLE) alignToPage(t)
         }, 450)
+    }
+
+    /** Página de destino de uma troca por toque: ao parar a rolagem, ajusta o alinhamento exato. */
+    private var alignTarget = -1
+    private var resetPageTop = false
+    private val resetTopOff = Runnable { resetPageTop = false }
+
+    /** Deixa o começo da página [t] exatamente no começo da tela (esquerda no horizontal, topo no vertical). */
+    private fun alignToPage(t: Int) {
+        alignTarget = -1
+        if (t < 0 || (list.adapter?.itemCount ?: 0) <= t) return
+        val tv = lm().findViewByPosition(t)
+        if (tv == null) {
+            lm().scrollToPositionWithOffset(t, 0)
+            return
+        }
+        if (isBook) {
+            if (reflowMode) (tv as? ScrollView)?.scrollTo(0, 0)
+            if (tv.left != 0) list.scrollBy(tv.left, 0)
+        } else {
+            val d = tv.top - list.paddingTop
+            if (abs(d) > 1) list.scrollBy(0, d)
+        }
     }
 
     /** Vira a página no formato horizontal (usado com zoom no modo original). */
@@ -2671,6 +2718,12 @@ class MainActivity : AppCompatActivity() {
             RecyclerView.ViewHolder(root)
 
         override fun getItemViewType(position: Int): Int = if (isBook) 1 else 0
+
+        override fun onViewAttachedToWindow(holder: VH) {
+            super.onViewAttachedToWindow(holder)
+            // página que entra por troca de página: começa no topo, e não na posição em que a anterior estava
+            if (resetPageTop) (holder.root as? ScrollView)?.scrollTo(0, 0)
+        }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
             val book = viewType == 1
