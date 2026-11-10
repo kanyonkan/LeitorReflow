@@ -1913,9 +1913,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         if (done >= total) {
-            progressView.text = "Refluxo pronto ✓"
-            progressView.visibility = View.VISIBLE
-            main.postDelayed(hideProgressRunnable, 2000)
+            progressView.visibility = View.GONE // chegou a 100%: fecha sozinho
         } else {
             progressView.text = "Processando refluxo… ${done * 100 / total}%"
             progressView.visibility = View.VISIBLE
