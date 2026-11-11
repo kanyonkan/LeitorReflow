@@ -80,6 +80,15 @@ import kotlin.math.abs
  * Aqui o filho é medido exatamente com a largura definida (tela x zoom), então o
  * texto do refluxo quebra na largura da tela.
  */
+/**
+ * Página do Refluxo (formato horizontal): o texto selecionável pede foco ao receber o conteúdo e o
+ * ScrollView rolava sozinho até ele, deixando a página na primeira entrada sem as linhas do topo.
+ * Aqui a rolagem só acontece pelo dedo.
+ */
+class NoAutoScrollView(context: Context) : ScrollView(context) {
+    override fun computeScrollDeltaToGetChildRectOnScreen(rect: Rect): Int = 0
+}
+
 class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
 
     /**
@@ -1552,7 +1561,8 @@ class MainActivity : AppCompatActivity() {
         val count = list.adapter?.itemCount ?: 0
         if (count > p) {
             pendingPage = -1
-            lm().scrollToPositionWithOffset(p, 0)
+            // formato vertical: o começo da página no mesmo ponto das trocas de página
+            lm().scrollToPositionWithOffset(p, if (isBook) 0 else pageTopY() - list.paddingTop)
         }
     }
 
@@ -2933,7 +2943,7 @@ class MainActivity : AppCompatActivity() {
             box.addView(body)
             if (book) {
                 // uma página por tela; se o texto for maior que a tela, rola na vertical dentro dela
-                val sv = ScrollView(parent.context).apply {
+                val sv = NoAutoScrollView(parent.context).apply {
                     isVerticalScrollBarEnabled = false
                     layoutParams = RecyclerView.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
