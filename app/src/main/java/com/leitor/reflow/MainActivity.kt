@@ -1081,7 +1081,12 @@ class MainActivity : AppCompatActivity() {
             override fun handleOnBackPressed() {
                 if (backStack.isNotEmpty()) {
                     val pos = backStack.removeAt(backStack.size - 1)
-                    lm().scrollToPositionWithOffset(pos, 0)
+                    if (reflowMode && !pagesComplete) {
+                        // durante o processamento do Refluxo, a mesma rolagem rápida do salto de ida
+                        glideToPage(pos.coerceIn(0, (list.adapter?.itemCount ?: 1) - 1), fast = true)
+                    } else {
+                        lm().scrollToPositionWithOffset(pos, 0)
+                    }
                 } else {
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
