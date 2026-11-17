@@ -642,6 +642,7 @@ class MainActivity : AppCompatActivity() {
             alignTarget = -1
             glideSeq++ // e cancela as conferências de chegada de um salto em andamento
             focusLock = -1
+            resumeUi()
             snapStartOff = 0
             if (list.layoutManager != null && (list.adapter?.itemCount ?: 0) > 0) {
                 val v0 = lm().findViewByPosition(lm().findFirstVisibleItemPosition())
@@ -1681,6 +1682,30 @@ class MainActivity : AppCompatActivity() {
      */
     private var glideSeq = 0
 
+    // Durante um salto, as atualizações da lista (páginas que acabaram de ser processadas) ficam em
+    // espera: com a lista mudando o tempo todo a rolagem não estabilizava na página de destino.
+    private var uiPaused = false
+    private val pausedChanges = LinkedHashSet<Int>()
+
+    private fun notifyPage(i: Int) {
+        if (uiPaused) pausedChanges.add(i) else reflowAdapter.notifyItemChanged(i)
+    }
+
+    private fun resumeUi() {
+        if (!uiPaused) return
+        uiPaused = false
+        val l = ArrayList(pausedChanges)
+        pausedChanges.clear()
+        for (i in l) if (i < pages.size) reflowAdapter.notifyItemChanged(i)
+    }
+
+    /** Fim do salto: libera o processamento e as atualizações, e confere o alinhamento final. */
+    private fun endGlide(t: Int) {
+        focusLock = -1
+        resumeUi()
+        list.post { alignToPage(t) }
+    }
+
     /**
      * Confere a chegada à página [t] após a rolagem rápida: se ela parou antes (a lista é atualizada o
      * tempo todo durante o processamento e podia interromper a rolagem), repete o pedido.
@@ -1689,17 +1714,19 @@ class MainActivity : AppCompatActivity() {
         list.postDelayed({
             if (seq != glideSeq) return@postDelayed // outro salto, ou o usuário tocou na tela
             if (list.scrollState != RecyclerView.SCROLL_STATE_IDLE) {
-                if (waits > 0) watchGlide(seq, t, fast, retries, waits - 1) else focusLock = -1
+                if (waits > 0) watchGlide(seq, t, fast, retries, waits - 1)
+                else {
+                    focusLock = -1
+                    resumeUi()
+                }
                 return@postDelayed
             }
             if (lm().findFirstVisibleItemPosition() == t) {
-                focusLock = -1
-                alignToPage(t)
+                endGlide(t)
             } else if (retries > 0) {
                 glideToPage(t, fast, retries - 1)
             } else {
-                focusLock = -1
-                alignToPage(t)
+                endGlide(t)
             }
         }, 400)
     }
@@ -1711,6 +1738,7 @@ class MainActivity : AppCompatActivity() {
             // meio do caminho e a rolagem não estabilizava): o processamento se concentra no destino
             focusLock = t
             reflowFocus = t
+            uiPaused = true
         }
         if (reflowMode && isBook) {
             // a página que entra começa no topo (zera a rolagem interna dela ao aparecer)
@@ -2010,6 +2038,9 @@ class MainActivity : AppCompatActivity() {
             updatePageIndicator()
             return
         }
+        uiPaused = false
+        pausedChanges.clear()
+        focusLock = -1
         pages.clear()
         reflowTargets.clear()
         pagesUri = uri
@@ -2100,11 +2131,12 @@ class MainActivity : AppCompatActivity() {
                         reflowTargets.addAll(added)
                         if (i < pages.size) {
                             pages[i] = pt
-                            reflowAdapter.notifyItemChanged(i)
+                            notifyPage(i)
                         }
                         status.text = if (d < total) "Carregando… $d de $total páginas"
                         else "$total páginas · refluxo"
                         setReflowProgress(d, total)
+                        if (d >= total) resumeUi()
                         if (d == total) {
                             pagesComplete = true
                             pendingPage = -1
