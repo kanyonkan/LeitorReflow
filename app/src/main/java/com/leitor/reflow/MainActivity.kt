@@ -1671,24 +1671,33 @@ class MainActivity : AppCompatActivity() {
      * recalcula a distância a cada quadro, então acompanha as páginas que mudam de altura enquanto o
      * texto é processado. Ao parar, o alinhamento exato é conferido (alignToPage).
      */
-    private fun glideToPage(t: Int) {
+    private fun glideToPage(t: Int, fast: Boolean = false) {
+        if (reflowMode && isBook) {
+            // a página que entra começa no topo (zera a rolagem interna dela ao aparecer)
+            main.removeCallbacks(resetTopOff)
+            resetPageTop = true
+            main.postDelayed(resetTopOff, if (fast) 2000 else 700)
+        }
         val sc = object : LinearSmoothScroller(this) {
             override fun getVerticalSnapPreference() = SNAP_TO_START
+            override fun getHorizontalSnapPreference() = SNAP_TO_START
             override fun calculateDyToMakeVisible(view: View, snapPreference: Int): Int {
                 val l = layoutManager ?: return 0
                 if (!l.canScrollVertically()) return 0
                 val lp = view.layoutParams as RecyclerView.LayoutParams
                 return pageTopY() - (l.getDecoratedTop(view) - lp.topMargin)
             }
-            override fun calculateSpeedPerPixel(displayMetrics: android.util.DisplayMetrics) = 0.12f
-            override fun calculateTimeForDeceleration(dx: Int) = 260
+            // salto para uma página distante: percorre rápido (a distância pode ser de dezenas de páginas)
+            override fun calculateSpeedPerPixel(displayMetrics: android.util.DisplayMetrics) =
+                if (fast) 0.002f else 0.12f
+            override fun calculateTimeForDeceleration(dx: Int) = if (fast) 120 else 260
         }
         sc.targetPosition = t
         alignTarget = t
         lm().startSmoothScroll(sc)
         list.postDelayed({
             if (alignTarget == t && list.scrollState == RecyclerView.SCROLL_STATE_IDLE) alignToPage(t)
-        }, 900)
+        }, if (fast) 1500L else 900L)
     }
 
     /** Página de destino de uma troca por toque: ao parar a rolagem, ajusta o alinhamento exato. */
@@ -1789,7 +1798,13 @@ class MainActivity : AppCompatActivity() {
             return
         }
         backStack.add(currentPage())
-        lm().scrollToPositionWithOffset(n, 0)
+        if (reflowMode && !pagesComplete) {
+            // durante o processamento do Refluxo o salto direto se perdia (a lista é atualizada o
+            // tempo todo): usa a rolagem rápida até a página, que acompanha as mudanças de altura
+            glideToPage(n, fast = true)
+        } else {
+            lm().scrollToPositionWithOffset(n, 0)
+        }
         // modo Original: mantém a centralização ajustada ao seguir o link; no Refluxo volta ao início
         if (reflowMode) hScroll.scrollTo(0, 0)
     }
