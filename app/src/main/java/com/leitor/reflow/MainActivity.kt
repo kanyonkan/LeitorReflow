@@ -640,6 +640,7 @@ class MainActivity : AppCompatActivity() {
             overInvalid = false
             snapAfterFling = false // tocar na tela interrompe a corrida: sem encaixe
             alignTarget = -1
+            glideSeq++ // e cancela as conferências de chegada de um salto em andamento
             snapStartOff = 0
             if (list.layoutManager != null && (list.adapter?.itemCount ?: 0) > 0) {
                 val v0 = lm().findViewByPosition(lm().findFirstVisibleItemPosition())
@@ -1676,7 +1677,31 @@ class MainActivity : AppCompatActivity() {
      * recalcula a distância a cada quadro, então acompanha as páginas que mudam de altura enquanto o
      * texto é processado. Ao parar, o alinhamento exato é conferido (alignToPage).
      */
-    private fun glideToPage(t: Int, fast: Boolean = false) {
+    private var glideSeq = 0
+
+    /**
+     * Confere a chegada à página [t] após a rolagem rápida: se ela parou antes (a lista é atualizada o
+     * tempo todo durante o processamento e podia interromper a rolagem), repete o pedido.
+     */
+    private fun watchGlide(seq: Int, t: Int, fast: Boolean, retries: Int, waits: Int = 16) {
+        list.postDelayed({
+            if (seq != glideSeq) return@postDelayed // outro salto, ou o usuário tocou na tela
+            if (list.scrollState != RecyclerView.SCROLL_STATE_IDLE) {
+                if (waits > 0) watchGlide(seq, t, fast, retries, waits - 1)
+                return@postDelayed
+            }
+            if (lm().findFirstVisibleItemPosition() == t) {
+                alignToPage(t)
+            } else if (retries > 0) {
+                glideToPage(t, fast, retries - 1)
+            } else {
+                alignToPage(t)
+            }
+        }, 400)
+    }
+
+    private fun glideToPage(t: Int, fast: Boolean = false, retries: Int = 3) {
+        val seq = ++glideSeq
         if (reflowMode && isBook) {
             // a página que entra começa no topo (zera a rolagem interna dela ao aparecer)
             main.removeCallbacks(resetTopOff)
@@ -1700,9 +1725,7 @@ class MainActivity : AppCompatActivity() {
         sc.targetPosition = t
         alignTarget = t
         lm().startSmoothScroll(sc)
-        list.postDelayed({
-            if (alignTarget == t && list.scrollState == RecyclerView.SCROLL_STATE_IDLE) alignToPage(t)
-        }, if (fast) 1500L else 900L)
+        watchGlide(seq, t, fast, retries)
     }
 
     /** Página de destino de uma troca por toque: ao parar a rolagem, ajusta o alinhamento exato. */
