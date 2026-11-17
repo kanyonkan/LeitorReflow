@@ -641,6 +641,7 @@ class MainActivity : AppCompatActivity() {
             snapAfterFling = false // tocar na tela interrompe a corrida: sem encaixe
             alignTarget = -1
             glideSeq++ // e cancela as conferências de chegada de um salto em andamento
+            focusLock = -1
             snapStartOff = 0
             if (list.layoutManager != null && (list.adapter?.itemCount ?: 0) > 0) {
                 val v0 = lm().findViewByPosition(lm().findFirstVisibleItemPosition())
@@ -1529,10 +1530,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     @Volatile private var reflowFocus = 0 // página em que o usuário está (prioridade do processamento)
+    @Volatile private var focusLock = -1 // durante um salto: processa em volta da página de destino
 
     private fun updatePageIndicator() {
         schedulePageSave()
-        if (reflowMode && !pagesComplete && (list.adapter?.itemCount ?: 0) > 0) reflowFocus = pageToSave()
+        if (reflowMode && !pagesComplete && focusLock < 0 && (list.adapter?.itemCount ?: 0) > 0) reflowFocus = pageToSave()
         val n = list.adapter?.itemCount ?: 0
         if (n == 0 || !barVisible) {
             pageIndicator.visibility = View.GONE
@@ -1687,14 +1689,16 @@ class MainActivity : AppCompatActivity() {
         list.postDelayed({
             if (seq != glideSeq) return@postDelayed // outro salto, ou o usuário tocou na tela
             if (list.scrollState != RecyclerView.SCROLL_STATE_IDLE) {
-                if (waits > 0) watchGlide(seq, t, fast, retries, waits - 1)
+                if (waits > 0) watchGlide(seq, t, fast, retries, waits - 1) else focusLock = -1
                 return@postDelayed
             }
             if (lm().findFirstVisibleItemPosition() == t) {
+                focusLock = -1
                 alignToPage(t)
             } else if (retries > 0) {
                 glideToPage(t, fast, retries - 1)
             } else {
+                focusLock = -1
                 alignToPage(t)
             }
         }, 400)
@@ -1702,6 +1706,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun glideToPage(t: Int, fast: Boolean = false, retries: Int = 3) {
         val seq = ++glideSeq
+        if (reflowMode && !pagesComplete) {
+            // as páginas por onde a rolagem passa NÃO viram prioridade (isso mudava a altura delas no
+            // meio do caminho e a rolagem não estabilizava): o processamento se concentra no destino
+            focusLock = t
+            reflowFocus = t
+        }
         if (reflowMode && isBook) {
             // a página que entra começa no topo (zera a rolagem interna dela ao aparecer)
             main.removeCallbacks(resetTopOff)
