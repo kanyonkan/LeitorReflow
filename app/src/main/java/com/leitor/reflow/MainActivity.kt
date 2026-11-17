@@ -1086,7 +1086,7 @@ class MainActivity : AppCompatActivity() {
                     val pos = backStack.removeAt(backStack.size - 1)
                     if (reflowMode && !pagesComplete) {
                         // durante o processamento do Refluxo, a mesma rolagem rápida do salto de ida
-                        glideToPage(pos.coerceIn(0, (list.adapter?.itemCount ?: 1) - 1), fast = true)
+                        jumpToPage(pos.coerceIn(0, (list.adapter?.itemCount ?: 1) - 1))
                     } else {
                         lm().scrollToPositionWithOffset(pos, 0)
                     }
@@ -1731,6 +1731,52 @@ class MainActivity : AppCompatActivity() {
         }, 400)
     }
 
+    /**
+     * Salto para uma página distante durante o processamento do Refluxo (link do índice, botão da
+     * página, botão voltar). Em vez da rolagem do Android (que anda em blocos de 10.000 px e podia
+     * passar direto pela página, indo e voltando conforme a altura das páginas no caminho), faz o
+     * salto direto e o repete até a lista ficar na página: as atualizações da lista ficam em espera
+     * e o processamento se concentra no destino até lá.
+     */
+    private fun jumpToPage(t: Int, tries: Int = 8) {
+        val seq = ++glideSeq
+        focusLock = t
+        reflowFocus = t
+        uiPaused = true
+        if (reflowMode && isBook) {
+            main.removeCallbacks(resetTopOff)
+            resetPageTop = true
+            main.postDelayed(resetTopOff, 2000)
+        }
+        applyJump(t)
+        watchJump(seq, t, tries)
+    }
+
+    private fun applyJump(t: Int) {
+        if ((list.adapter?.itemCount ?: 0) <= t) return
+        lm().scrollToPositionWithOffset(t, if (isBook) 0 else pageTopY() - list.paddingTop)
+        if (reflowMode && isBook) hScroll.scrollTo(0, 0)
+    }
+
+    private fun watchJump(seq: Int, t: Int, tries: Int, waits: Int = 20) {
+        list.postDelayed({
+            if (seq != glideSeq) return@postDelayed // outro salto, ou o usuário tocou na tela
+            if (list.scrollState != RecyclerView.SCROLL_STATE_IDLE) {
+                if (waits > 0) watchJump(seq, t, tries, waits - 1) else endGlide(t)
+                return@postDelayed
+            }
+            val tv = lm().findViewByPosition(t)
+            val ok = lm().findFirstVisibleItemPosition() == t && tv != null &&
+                (if (isBook) abs(tv.left) <= 1 else abs(tv.top - pageTopY()) <= 1)
+            if (ok || tries <= 0) {
+                endGlide(t)
+            } else {
+                applyJump(t)
+                watchJump(seq, t, tries - 1)
+            }
+        }, 120)
+    }
+
     private fun glideToPage(t: Int, fast: Boolean = false, retries: Int = 3) {
         val seq = ++glideSeq
         if (reflowMode && !pagesComplete) {
@@ -1867,7 +1913,7 @@ class MainActivity : AppCompatActivity() {
         if (reflowMode && !pagesComplete) {
             // durante o processamento do Refluxo o salto direto se perdia (a lista é atualizada o
             // tempo todo): usa a rolagem rápida até a página, que acompanha as mudanças de altura
-            glideToPage(n, fast = true)
+            jumpToPage(n)
         } else {
             lm().scrollToPositionWithOffset(n, 0)
         }
