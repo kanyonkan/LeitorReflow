@@ -141,10 +141,87 @@ class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
     }
 }
 
+/** REGISTRO DE DEPURAÇÃO TEMPORÁRIO (versão de teste): anota o que acontece nos saltos de página. */
+object Dbg {
+    private val sb = StringBuilder()
+    private val fmt = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
+    @Volatile private var until = 0L
+    private var budget = 0
+
+    @Synchronized fun log(m: String) {
+        sb.append(fmt.format(java.util.Date())).append(' ').append(m).append('\n')
+        if (sb.length > 90000) sb.delete(0, sb.length - 70000)
+    }
+
+    /** Liga o registro detalhado por [ms] milissegundos (limite de linhas por janela). */
+    @Synchronized fun arm(ms: Long) {
+        until = android.os.SystemClock.uptimeMillis() + ms
+        budget = 700
+    }
+
+    /** Registro detalhado, só dentro da janela ligada por [arm]. */
+    @Synchronized fun v(m: String) {
+        if (android.os.SystemClock.uptimeMillis() < until && budget > 0) {
+            budget--
+            log(m)
+        }
+    }
+
+    fun armed(): Boolean = android.os.SystemClock.uptimeMillis() < until
+
+    @Synchronized fun text(): String = sb.toString()
+    @Synchronized fun clear() = sb.setLength(0)
+
+    fun caller(): String = Throwable().stackTrace
+        .filter { it.className.startsWith("com.leitor") && !it.className.endsWith("Dbg") }
+        .drop(1).take(5).joinToString(" < ") { "${it.methodName}:${it.lineNumber}" }
+}
+
 /** LinearLayoutManager que permite travar a rolagem lateral feita com o dedo. */
 class PagerLayoutManager(context: Context, orientation: Int) :
     LinearLayoutManager(context, orientation, false) {
     var userScrollEnabled = true
+
+    override fun scrollToPositionWithOffset(position: Int, offset: Int) {
+        Dbg.v("LM.scrollToPositionWithOffset pos=$position off=$offset por ${Dbg.caller()}")
+        super.scrollToPositionWithOffset(position, offset)
+    }
+
+    override fun scrollToPosition(position: Int) {
+        Dbg.v("LM.scrollToPosition pos=$position por ${Dbg.caller()}")
+        super.scrollToPosition(position)
+    }
+
+    override fun startSmoothScroll(smoothScroller: RecyclerView.SmoothScroller) {
+        Dbg.v("LM.startSmoothScroll alvo=${smoothScroller.targetPosition} por ${Dbg.caller()}")
+        super.startSmoothScroll(smoothScroller)
+    }
+
+    override fun scrollVerticallyBy(dy: Int, recycler: RecyclerView.Recycler, state: RecyclerView.State): Int {
+        val r = super.scrollVerticallyBy(dy, recycler, state)
+        if (dy != 0) Dbg.v("LM.scrollV pedido=$dy feito=$r first=${findFirstVisibleItemPosition()}")
+        return r
+    }
+
+    override fun scrollHorizontallyBy(dx: Int, recycler: RecyclerView.Recycler, state: RecyclerView.State): Int {
+        val r = super.scrollHorizontallyBy(dx, recycler, state)
+        if (dx != 0) Dbg.v("LM.scrollH pedido=$dx feito=$r first=${findFirstVisibleItemPosition()}")
+        return r
+    }
+
+    override fun onLayoutCompleted(state: RecyclerView.State?) {
+        super.onLayoutCompleted(state)
+        if (Dbg.armed()) {
+            val f = findFirstVisibleItemPosition()
+            val v = findViewByPosition(f)
+            Dbg.v("LM.layout first=$f top=${v?.top} left=${v?.left} itens=${state?.itemCount} alvo=${state?.targetScrollPosition}")
+        }
+    }
+
+    override fun onItemsUpdated(recyclerView: RecyclerView, positionStart: Int, itemCount: Int, payload: Any?) {
+        Dbg.v("LM.itemsAtualizados de=$positionStart qtd=$itemCount")
+        super.onItemsUpdated(recyclerView, positionStart, itemCount, payload)
+    }
     override fun canScrollHorizontally(): Boolean = userScrollEnabled && super.canScrollHorizontally()
 
     // o texto selecionável do Refluxo pede foco a cada atualização da página; com isso a lista
@@ -671,6 +748,9 @@ class MainActivity : AppCompatActivity() {
             return true
         }
         tapDetector.onTouchEvent(ev)
+        if (Dbg.armed() && (ev.actionMasked == MotionEvent.ACTION_DOWN || ev.actionMasked == MotionEvent.ACTION_UP)) {
+            Dbg.v("toque ${if (ev.actionMasked == MotionEvent.ACTION_DOWN) "DOWN" else "UP"} x=${ev.x.toInt()} y=${ev.y.toInt()}")
+        }
         val zoomedBook = isBook && !reflowMode && zoom > 1f
         if (zoomedBook) {
             // arrasto para os lados com zoom: as páginas formam uma "faixa" contínua (ver handleStrip)
@@ -909,10 +989,12 @@ class MainActivity : AppCompatActivity() {
         }
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                Dbg.v("onScrolled dx=$dx dy=$dy first=${lm().findFirstVisibleItemPosition()}")
                 updatePageIndicator()
             }
 
             override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
+                Dbg.v("estadoRolagem=$newState alignTarget=$alignTarget")
                 if (newState == RecyclerView.SCROLL_STATE_IDLE) {
                     updatePageIndicator()
                     // terminou uma corrida por deslize rápido: encaixa na página mais próxima
@@ -966,6 +1048,27 @@ class MainActivity : AppCompatActivity() {
         )
         row2Lp.topMargin = dp(2)
         bar.addView(row2, row2Lp)
+
+        // --- VERSÃO DE TESTE: copia o registro de depuração (toque longo limpa) ---
+        val dbgBtn = makeBtn("Registro (teste): toque = copiar, segurar = limpar") {
+            val head = "LeitorReflow registro de teste | ${android.os.Build.MODEL} | Android ${android.os.Build.VERSION.RELEASE}\n"
+            val txt = head + Dbg.text()
+            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                .setPrimaryClip(ClipData.newPlainText("registro", txt))
+            Toast.makeText(this, "Registro copiado (${txt.count { it == '\n' }} linhas). Cole no chat.", Toast.LENGTH_LONG).show()
+        }
+        dbgBtn.setOnLongClickListener {
+            Dbg.clear()
+            Toast.makeText(this, "Registro limpo.", Toast.LENGTH_SHORT).show()
+            true
+        }
+        val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row3.addView(dbgBtn)
+        val row3Lp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        row3Lp.topMargin = dp(2)
+        bar.addView(row3, row3Lp)
 
         status = TextView(this).apply {
             text = "Toque em Abrir e escolha um PDF."
@@ -1084,6 +1187,10 @@ class MainActivity : AppCompatActivity() {
             override fun handleOnBackPressed() {
                 if (backStack.isNotEmpty()) {
                     val pos = backStack.removeAt(backStack.size - 1)
+                    Dbg.arm(6000)
+                    Dbg.log("=== VOLTAR (botão do Android) para a página ${pos + 1} (índice $pos)")
+                    dbgSnap("antes")
+                    dbgSchedule("voltar")
                     if (reflowMode && !pagesComplete) {
                         // durante o processamento do Refluxo, a mesma rolagem rápida do salto de ida
                         jumpToPage(pos.coerceIn(0, (list.adapter?.itemCount ?: 1) - 1))
@@ -1565,6 +1672,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restorePending() {
+        Dbg.v("restorePending pendingPage=$pendingPage")
         val p = pendingPage
         if (p < 0) return
         val count = list.adapter?.itemCount ?: 0
@@ -1688,11 +1796,13 @@ class MainActivity : AppCompatActivity() {
     private val pausedChanges = LinkedHashSet<Int>()
 
     private fun notifyPage(i: Int) {
+        Dbg.v("processada página ${i + 1} pausado=$uiPaused foco=$reflowFocus first=${lm().findFirstVisibleItemPosition()}")
         if (uiPaused) pausedChanges.add(i) else reflowAdapter.notifyItemChanged(i)
     }
 
     private fun resumeUi() {
         if (!uiPaused) return
+        Dbg.v("resumeUi: libera ${pausedChanges.size} atualizações guardadas")
         uiPaused = false
         val l = ArrayList(pausedChanges)
         pausedChanges.clear()
@@ -1701,6 +1811,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Fim do salto: libera o processamento e as atualizações, e confere o alinhamento final. */
     private fun endGlide(t: Int) {
+        Dbg.v("endGlide alvo=$t")
         focusLock = -1
         resumeUi()
         list.post { alignToPage(t) }
@@ -1740,6 +1851,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun jumpToPage(t: Int, tries: Int = 8) {
         val seq = ++glideSeq
+        Dbg.v("jumpToPage alvo=$t seq=$seq")
         focusLock = t
         reflowFocus = t
         uiPaused = true
@@ -1753,6 +1865,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyJump(t: Int) {
+        Dbg.v("applyJump alvo=$t")
         if ((list.adapter?.itemCount ?: 0) <= t) return
         lm().scrollToPositionWithOffset(t, if (isBook) 0 else pageTopY() - list.paddingTop)
         if (reflowMode && isBook) hScroll.scrollTo(0, 0)
@@ -1760,7 +1873,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun watchJump(seq: Int, t: Int, tries: Int, waits: Int = 20) {
         list.postDelayed({
-            if (seq != glideSeq) return@postDelayed // outro salto, ou o usuário tocou na tela
+            if (seq != glideSeq) {
+                Dbg.v("watchJump cancelado (seq=$seq atual=$glideSeq)")
+                return@postDelayed // outro salto, ou o usuário tocou na tela
+            }
             if (list.scrollState != RecyclerView.SCROLL_STATE_IDLE) {
                 if (waits > 0) watchJump(seq, t, tries, waits - 1) else endGlide(t)
                 return@postDelayed
@@ -1768,6 +1884,7 @@ class MainActivity : AppCompatActivity() {
             val tv = lm().findViewByPosition(t)
             val ok = lm().findFirstVisibleItemPosition() == t && tv != null &&
                 (if (isBook) abs(tv.left) <= 1 else abs(tv.top - pageTopY()) <= 1)
+            Dbg.v("watchJump alvo=$t first=${lm().findFirstVisibleItemPosition()} top=${tv?.top} left=${tv?.left} ok=$ok tentativasRestantes=$tries")
             if (ok || tries <= 0) {
                 endGlide(t)
             } else {
@@ -1909,6 +2026,10 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Essa página ainda não foi carregada.", Toast.LENGTH_SHORT).show()
             return
         }
+        Dbg.arm(6000)
+        Dbg.log("=== SALTO pedido para a página ${n + 1} (índice $n)")
+        dbgSnap("antes")
+        dbgSchedule("salto")
         backStack.add(currentPage())
         if (reflowMode && !pagesComplete) {
             // durante o processamento do Refluxo o salto direto se perdia (a lista é atualizada o
@@ -1919,6 +2040,22 @@ class MainActivity : AppCompatActivity() {
         }
         // modo Original: mantém a centralização ajustada ao seguir o link; no Refluxo volta ao início
         if (reflowMode) hScroll.scrollTo(0, 0)
+    }
+
+    private fun dbgSnap(tag: String) {
+        val f = lm().findFirstVisibleItemPosition()
+        val v = lm().findViewByPosition(f)
+        Dbg.log(
+            "$tag: first=$f top=${v?.top} left=${v?.left} altura=${v?.height} itens=${list.adapter?.itemCount} " +
+                "estado=${list.scrollState} reflow=$reflowMode completo=$pagesComplete horizontal=$isBook " +
+                "foco=$reflowFocus trava=$focusLock pausado=$uiPaused pilha=${backStack.size}"
+        )
+    }
+
+    private fun dbgSchedule(tag: String) {
+        for (ms in longArrayOf(60, 200, 500, 1000, 2000, 3500, 5500)) {
+            list.postDelayed({ dbgSnap("$tag +${ms}ms") }, ms)
+        }
     }
 
     private fun openUrl(raw: String) {
@@ -3097,6 +3234,7 @@ class MainActivity : AppCompatActivity() {
         override fun getItemCount() = pages.size
 
         override fun onBindViewHolder(h: VH, position: Int) {
+            Dbg.v("bind página ${position + 1}")
             val fg = if (night) Color.parseColor("#D6D3CB") else Color.parseColor("#1B1B1B")
             val pt = pages[position]
             val content = if (!pt.loaded) "Carregando página…" else pt.text.ifBlank { "(página sem texto)" }
