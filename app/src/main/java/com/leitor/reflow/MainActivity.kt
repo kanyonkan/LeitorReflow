@@ -182,28 +182,62 @@ class PagerLayoutManager(context: Context, orientation: Int) :
     LinearLayoutManager(context, orientation, false) {
     var userScrollEnabled = true
 
+    /**
+     * Posição do último salto direto. Durante o processamento do Refluxo cada atualização de página
+     * fazia a lista se re-ancorar sozinha numa página antiga (o registro mostra a lista voltando a
+     * ela sem nenhuma rolagem). Enquanto o usuário (ou uma rolagem animada) não mexer na lista,
+     * cada novo layout reafirma o destino do salto.
+     */
+    private var stickPos = -1
+    private var stickOff = 0
+
     override fun scrollToPositionWithOffset(position: Int, offset: Int) {
         Dbg.v("LM.scrollToPositionWithOffset pos=$position off=$offset por ${Dbg.caller()}")
+        stickPos = position
+        stickOff = offset
         super.scrollToPositionWithOffset(position, offset)
     }
 
     override fun scrollToPosition(position: Int) {
         Dbg.v("LM.scrollToPosition pos=$position por ${Dbg.caller()}")
+        stickPos = position
+        stickOff = 0
         super.scrollToPosition(position)
     }
 
     override fun startSmoothScroll(smoothScroller: RecyclerView.SmoothScroller) {
         Dbg.v("LM.startSmoothScroll alvo=${smoothScroller.targetPosition} por ${Dbg.caller()}")
+        stickPos = -1
         super.startSmoothScroll(smoothScroller)
     }
 
+    override fun onAdapterChanged(oldAdapter: RecyclerView.Adapter<*>?, newAdapter: RecyclerView.Adapter<*>?) {
+        stickPos = -1
+        super.onAdapterChanged(oldAdapter, newAdapter)
+    }
+
+    override fun onLayoutChildren(recycler: RecyclerView.Recycler, state: RecyclerView.State) {
+        if (stickPos >= 0 && !state.isPreLayout && state.itemCount > stickPos) {
+            val f = findFirstVisibleItemPosition()
+            if (f != stickPos) {
+                Dbg.v("LM.reafirma salto: primeira=$f -> $stickPos")
+                super.scrollToPositionWithOffset(stickPos, stickOff)
+            }
+        } else if (state.itemCount <= stickPos) {
+            stickPos = -1
+        }
+        super.onLayoutChildren(recycler, state)
+    }
+
     override fun scrollVerticallyBy(dy: Int, recycler: RecyclerView.Recycler, state: RecyclerView.State): Int {
+        if (dy != 0) stickPos = -1
         val r = super.scrollVerticallyBy(dy, recycler, state)
         if (dy != 0) Dbg.v("LM.scrollV pedido=$dy feito=$r first=${findFirstVisibleItemPosition()}")
         return r
     }
 
     override fun scrollHorizontallyBy(dx: Int, recycler: RecyclerView.Recycler, state: RecyclerView.State): Int {
+        if (dx != 0) stickPos = -1
         val r = super.scrollHorizontallyBy(dx, recycler, state)
         if (dx != 0) Dbg.v("LM.scrollH pedido=$dx feito=$r first=${findFirstVisibleItemPosition()}")
         return r
