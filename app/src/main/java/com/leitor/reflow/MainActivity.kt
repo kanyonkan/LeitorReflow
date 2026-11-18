@@ -1810,6 +1810,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Fim do salto: libera o processamento e as atualizações, e confere o alinhamento final. */
+    /**
+     * O texto selecionável de uma página antiga mantém o foco; a cada atualização da lista o
+     * LinearLayoutManager se ancora nessa página e devolve a lista ao ponto de partida. Tira o foco.
+     */
+    private fun dropFocus() {
+        Dbg.v("dropFocus: filho com foco=${list.focusedChild != null}")
+        val old = list.descendantFocusability
+        list.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        list.focusedChild?.clearFocus()
+        list.clearFocus()
+        list.descendantFocusability = old
+    }
+
     private fun endGlide(t: Int) {
         Dbg.v("endGlide alvo=$t")
         focusLock = -1
@@ -1867,6 +1880,7 @@ class MainActivity : AppCompatActivity() {
     private fun applyJump(t: Int) {
         Dbg.v("applyJump alvo=$t")
         if ((list.adapter?.itemCount ?: 0) <= t) return
+        dropFocus()
         lm().scrollToPositionWithOffset(t, if (isBook) 0 else pageTopY() - list.paddingTop)
         if (reflowMode && isBook) hScroll.scrollTo(0, 0)
     }
