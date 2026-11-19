@@ -218,11 +218,11 @@ class PagerLayoutManager(context: Context, orientation: Int) :
 
     override fun onLayoutChildren(recycler: RecyclerView.Recycler, state: RecyclerView.State) {
         if (stickPos >= 0 && !state.isPreLayout && state.itemCount > stickPos) {
+            // sempre reafirma: o registro mostrou layouts que, mesmo com a lista no destino,
+            // se ancoravam na página antiga (a lista alternava entre o destino e a página antiga)
             val f = findFirstVisibleItemPosition()
-            if (f != stickPos) {
-                Dbg.v("LM.reafirma salto: primeira=$f -> $stickPos")
-                super.scrollToPositionWithOffset(stickPos, stickOff)
-            }
+            if (f != stickPos) Dbg.v("LM.reafirma salto: primeira=$f -> $stickPos")
+            super.scrollToPositionWithOffset(stickPos, stickOff)
         } else if (state.itemCount <= stickPos) {
             stickPos = -1
         }
