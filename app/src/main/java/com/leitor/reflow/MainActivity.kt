@@ -421,6 +421,7 @@ class MainActivity : AppCompatActivity() {
     private val reflowTargets = ArrayList<LinkTarget>()
     private var pagesUri: Uri? = null
     private var pagesComplete = false
+    private var docIsEpub = false // arquivo aberto é EPUB (só Refluxo, sem modo Original)
 
     // ---- modo original (imagem das páginas) ----
     private val sizes = ArrayList<IntArray>() // [largura, altura] de cada página
@@ -567,7 +568,7 @@ class MainActivity : AppCompatActivity() {
         }
         val canNew = liveWindows < MAX_WINDOWS
         val b = AlertDialog.Builder(this)
-            .setTitle("Abrir este PDF:")
+            .setTitle("Abrir este arquivo:")
             .setMessage(
                 if (canNew) "Em uma nova janela, o PDF atual continua aberto. Nesta janela, o PDF atual é " +
                     "fechado (as configurações dele ficam guardadas)."
@@ -1055,7 +1056,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        row1.addView(makeBtn("Abrir") { picker.launch(arrayOf("application/pdf")) })
+        row1.addView(makeBtn("Abrir") { picker.launch(arrayOf("application/pdf", "application/epub+zip", "application/octet-stream")) })
         modeBtn = makeBtn("") { toggleMode() }
         row1.addView(modeBtn)
         row1.addView(makeBtn("A−") { changeSize(-1) })
@@ -1261,7 +1262,7 @@ class MainActivity : AppCompatActivity() {
     private fun askForExternalPdf(uri: Uri) {
         val canNew = liveWindows - 1 < MAX_WINDOWS // esta tela será trocada pela nova janela
         val b = AlertDialog.Builder(this)
-            .setTitle("Abrir este PDF:")
+            .setTitle("Abrir este arquivo:")
             .setCancelable(false)
             .setMessage(
                 if (canNew) "Em uma nova janela, o PDF que você estava lendo continua aberto. " +
@@ -1348,7 +1349,7 @@ class MainActivity : AppCompatActivity() {
         }
 
     private fun updateLabels() {
-        modeBtn.text = if (reflowMode) "Modo: Refluxo" else "Modo: Original"
+        modeBtn.text = if (docIsEpub) "EPUB: só Refluxo" else if (reflowMode) "Modo: Refluxo" else "Modo: Original"
         themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
         layoutBtn.text = if (isBook) "Páginas: Horizontal" else "Páginas: Vertical"
     }
@@ -1575,6 +1576,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toggleMode() {
+        if (docIsEpub) {
+            Toast.makeText(this, "EPUB só tem o modo Refluxo.", Toast.LENGTH_SHORT).show()
+            return
+        }
         // guarda a página atual para continuar nela no outro modo
         if (pendingPage < 0 && (list.adapter?.itemCount ?: 0) > 0) pendingPage = currentPage()
         if (!reflowMode) origScrollX = hScroll.scrollX // saindo do Original: guarda a centralização
@@ -2053,7 +2058,10 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {
         }
         // nome para exibir, sem a extensão .pdf
-        currentName = (name ?: uri.lastPathSegment ?: "").replace(Regex("(?i)\\.pdf$"), "")
+        val mime = try { contentResolver.getType(uri) } catch (_: Exception) { null }
+        docIsEpub = mime == "application/epub+zip" ||
+            (name ?: uri.lastPathSegment ?: "").lowercase().endsWith(".epub")
+        currentName = (name ?: uri.lastPathSegment ?: "").replace(Regex("(?i)\\.(pdf|epub)$"), "")
         // o nome do PDF aparece na lista de apps recentes, para distinguir as janelas
         try { setTaskDescription(android.app.ActivityManager.TaskDescription(currentName)) } catch (_: Throwable) {}
         return "pg_" + (name ?: uri.toString()) + "|" + size
@@ -2190,7 +2198,7 @@ class MainActivity : AppCompatActivity() {
         hScroll.scrollTo(0, 0)
         origScrollX = if (keepZoom) dp0.getInt(dk("scrollX"), 0).coerceAtLeast(0) else 0
         // aplica os ajustes lembrados deste PDF (ou o padrão)
-        val newReflow = keepMode && dp0.getBoolean(dk("reflow"), false)
+        val newReflow = docIsEpub || (keepMode && dp0.getBoolean(dk("reflow"), false))
         val newLayout = if (keepLayout) dp0.getInt(dk("layout"), 1).coerceIn(0, 1) else 1
         val newZoom = if (keepZoom) dp0.getFloat(dk("zoom"), 1f).coerceIn(1f, ZOOM_MAX) else 1f
         val newText = if (keepZoom) dp0.getFloat(dk("textSp"), TEXT_DEFAULT).coerceIn(TEXT_MIN, TEXT_MAX) else TEXT_DEFAULT
@@ -2221,7 +2229,8 @@ class MainActivity : AppCompatActivity() {
         val token = ++loadToken
         clearSelection()
         closeRenderer()
-        if (reflowMode) showReflow(uri, token) else showOriginal(uri, token)
+        if (docIsEpub) showEpub(uri, token)
+        else if (reflowMode) showReflow(uri, token) else showOriginal(uri, token)
     }
 
     private val hideProgressRunnable = Runnable { progressView.visibility = View.GONE }
@@ -2392,6 +2401,56 @@ class MainActivity : AppCompatActivity() {
                     hideReflowProgress()
                     Toast.makeText(this@MainActivity, "Não foi possível abrir o PDF.", Toast.LENGTH_LONG).show()
                     Toast.makeText(this, e.message ?: "Erro", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    /** EPUB: lê o livro inteiro de uma vez (é rápido) e mostra no mesmo Refluxo do PDF. */
+    private fun showEpub(uri: Uri, token: Int) {
+        if (pagesUri == uri && pagesComplete) {
+            reflowAdapter.notifyDataSetChanged()
+            status.text = "${pages.size} páginas · EPUB"
+            hideReflowProgress()
+            restorePending()
+            pendingPage = -1
+            updatePageIndicator()
+            return
+        }
+        uiPaused = false
+        pausedChanges.clear()
+        focusLock = -1
+        pages.clear()
+        reflowTargets.clear()
+        pagesUri = uri
+        pagesComplete = false
+        reflowAdapter.notifyDataSetChanged()
+        status.text = "Abrindo EPUB…"
+        progressView.text = "Lendo EPUB…"
+        positionProgress()
+        progressView.visibility = View.VISIBLE
+        Thread {
+            try {
+                val book = contentResolver.openInputStream(uri)?.use { EpubBook.load(it) }
+                    ?: throw IllegalStateException("Não foi possível ler o arquivo")
+                main.post {
+                    if (token != loadToken) return@post
+                    reflowTargets.addAll(book.targets)
+                    for (p in book.pages) pages.add(PageText(p.text, p.spans))
+                    reflowAdapter.notifyDataSetChanged()
+                    status.text = "${pages.size} páginas · EPUB"
+                    hideReflowProgress()
+                    pagesComplete = true
+                    restorePending()
+                    pendingPage = -1
+                    updatePageIndicator()
+                }
+            } catch (e: Throwable) {
+                main.post {
+                    if (token != loadToken) return@post
+                    status.text = "Não foi possível abrir o EPUB."
+                    hideReflowProgress()
+                    Toast.makeText(this@MainActivity, "Não foi possível abrir o EPUB: ${e.message ?: "erro"}", Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
@@ -2676,6 +2735,10 @@ class MainActivity : AppCompatActivity() {
         java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFC).lowercase()
 
     private fun showSearchDialog() {
+        if (docIsEpub) {
+            Toast.makeText(this, "A busca ainda só funciona em PDF.", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (currentUri == null) {
             Toast.makeText(this, "Abra um PDF primeiro.", Toast.LENGTH_SHORT).show()
             return
