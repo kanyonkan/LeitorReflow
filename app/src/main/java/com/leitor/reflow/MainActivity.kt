@@ -371,7 +371,7 @@ class MainActivity : AppCompatActivity() {
     private var pagesComplete = false
     private var docIsEpub = false // arquivo aberto é EPUB (só Refluxo, sem modo Original)
     private var docIsDocx = false // arquivo aberto é DOCX
-    private var docxOriginal = true // DOCX: true = com a formatação ("Original"), false = texto simples ("Refluxo")
+    private val docxOriginal = true // DOCX: o texto sempre aparece com a formatação do documento
     private var epubFile: File? = null // cópia do EPUB aberto (acesso direto às figuras)
     @Volatile private var epubZip: java.util.zip.ZipFile? = null
     private val imgExec = Executors.newFixedThreadPool(2)
@@ -486,6 +486,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var pageIndicator: TextView
     private lateinit var modeBtn: Button
+    private lateinit var openBtn: Button
     private lateinit var themeBtn: Button
     private lateinit var layoutBtn: Button
     private lateinit var settingsBtn: Button
@@ -1008,13 +1009,14 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        row1.addView(makeBtn("Abrir") { picker.launch(
+        openBtn = makeBtn("Abrir") { picker.launch(
                 arrayOf(
                     "application/pdf", "application/epub+zip",
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     "application/octet-stream"
                 )
-            ) })
+            ) }
+        row1.addView(openBtn)
         modeBtn = makeBtn("") { toggleMode() }
         row1.addView(modeBtn)
         row1.addView(makeBtn("A−") { changeSize(-1) })
@@ -1264,8 +1266,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateLabels() {
         modeBtn.text = if (docIsEpub) "EPUB: só Refluxo"
-        else if (docIsDocx) (if (docxOriginal) "DOCX: Original" else "DOCX: Refluxo")
+        else if (docIsDocx) "DOCX: só Refluxo"
         else if (reflowMode) "PDF: Refluxo" else "PDF: Original"
+        // sem documento aberto: só o botão Abrir, maior; com documento: Abrir reduzido + botão de modo
+        val noDoc = currentUri == null
+        modeBtn.visibility = if (noDoc) View.GONE else View.VISIBLE
+        openBtn.text = if (noDoc) "Abrir: PDF, DOCX, EPUB" else "Abrir"
+        (openBtn.layoutParams as LinearLayout.LayoutParams).weight = if (noDoc) 2f else 1f
+        openBtn.requestLayout()
         themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
         layoutBtn.text = if (isBook) "Páginas: Horizontal" else "Páginas: Vertical"
     }
@@ -1345,7 +1353,7 @@ class MainActivity : AppCompatActivity() {
             e.putFloat(dk("zoom"), zoom)
             e.putFloat(dk("textSp"), textSp)
         }
-        if (keepMode) e.putBoolean(dk("reflow"), if (docIsDocx) !docxOriginal else reflowMode)
+        if (keepMode) e.putBoolean(dk("reflow"), reflowMode)
         if (keepLayout) e.putInt(dk("layout"), pageLayout)
         if (keepNight) e.putBoolean(dk("night"), night)
         e.apply()
@@ -1492,16 +1500,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toggleMode() {
-        if (docIsDocx) {
-            // DOCX: "Original" mostra a formatação; "Refluxo" mostra só o texto corrido
-            docxOriginal = !docxOriginal
-            saveDocSettings()
-            updateLabels()
-            reflowAdapter.notifyDataSetChanged()
-            return
-        }
-        if (docIsEpub) {
-            Toast.makeText(this, "EPUB só tem o modo Refluxo.", Toast.LENGTH_SHORT).show()
+        if (docIsDocx || docIsEpub) {
+            Toast.makeText(
+                this, "${if (docIsDocx) "DOCX" else "EPUB"} só tem o modo Refluxo.", Toast.LENGTH_SHORT
+            ).show()
             return
         }
         // guarda a página atual para continuar nela no outro modo
@@ -2095,7 +2097,6 @@ class MainActivity : AppCompatActivity() {
         origScrollX = if (keepZoom) dp0.getInt(dk("scrollX"), 0).coerceAtLeast(0) else 0
         // aplica os ajustes lembrados deste PDF (ou o padrão)
         val savedReflow = keepMode && dp0.getBoolean(dk("reflow"), false)
-        docxOriginal = !(docIsDocx && savedReflow)
         val newReflow = docIsEpub || docIsDocx || savedReflow
         val newLayout = if (keepLayout) dp0.getInt(dk("layout"), 1).coerceIn(0, 1) else 1
         val newZoom = if (keepZoom) dp0.getFloat(dk("zoom"), 1f).coerceIn(1f, ZOOM_MAX) else 1f
