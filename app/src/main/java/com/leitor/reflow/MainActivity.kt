@@ -1220,8 +1220,15 @@ class MainActivity : AppCompatActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        // a rotação não pode mudar a página: guarda a atual e volta a ela depois do novo layout
+        val pg = if (currentUri != null && (list.adapter?.itemCount ?: 0) > 0) currentPage() else -1
         applyWidth()
         list.adapter?.notifyDataSetChanged()
+        if (pg >= 0) {
+            val fix = Runnable { lm().scrollToPositionWithOffset(pg, 0) }
+            list.post(fix)
+            list.postDelayed(fix, 250)
+        }
     }
 
     override fun onPause() {
@@ -1305,15 +1312,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyRotation() {
         requestedOrientation = when (rotation) {
-            1 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
-            2 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
-            3 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            1 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            3 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
             else -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
     private fun rotateScreen() {
-        rotation = (rotation + 1) % 4
+        rotation = when (rotation) { 0 -> 1; 1 -> 3; else -> 0 } // o retrato de cabeça para baixo (180°) o Android costuma recusar
         applyRotation()
         saveDocSettings()
     }
