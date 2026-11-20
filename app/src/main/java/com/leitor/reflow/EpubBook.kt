@@ -5,8 +5,9 @@ import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
 import org.jsoup.parser.Parser
-import java.io.InputStream
-import java.util.zip.ZipInputStream
+import android.graphics.BitmapFactory
+import java.io.File
+import java.util.zip.ZipFile
 
 /**
  * Leitor de EPUB: lê o zip, segue a ordem de leitura (spine) e transforma o texto dos capítulos
@@ -15,32 +16,49 @@ import java.util.zip.ZipInputStream
  */
 object EpubBook {
 
-    class Page(val text: String, val spans: List<Reflow.Span>)
+    class Page(val text: String, val spans: List<Reflow.Span>, val image: String? = null)
     class Result(val pages: List<Page>, val targets: List<LinkTarget>)
 
     private const val PAGE_CHARS = 1700 // tamanho aproximado de cada "página"
     private const val MAX_ENTRY = 12 * 1024 * 1024
 
-    private class Para(val text: String, val spans: List<Reflow.Span>, val chapterStart: Boolean)
+    private class Para(val text: String, val spans: List<Reflow.Span>, val chapterStart: Boolean, val image: String? = null)
     private class LinkRef(val path: String, val frag: String, val external: String?)
 
-    fun load(input: InputStream): Result {
-        // 1) lê só os arquivos de texto do zip (imagens e fontes são ignoradas)
+    /** Lê o EPUB já copiado para um arquivo (acesso direto às partes do zip). */
+    fun load(file: File): Result {
+        ZipFile(file).use { zip -> return loadZip(zip) }
+    }
+
+    private fun loadZip(zip: ZipFile): Result {
+        // 1) lê só os arquivos de texto do zip (as imagens são lidas depois, sob demanda)
         val files = HashMap<String, ByteArray>()
-        ZipInputStream(input.buffered()).use { zin ->
-            while (true) {
-                val e = zin.nextEntry ?: break
-                if (e.isDirectory) continue
-                val n = e.name
-                val low = n.lowercase()
-                val wanted = low.endsWith(".xhtml") || low.endsWith(".html") || low.endsWith(".htm") ||
-                    low.endsWith(".xml") || low.endsWith(".opf") || low.endsWith(".ncx")
-                if (!wanted) continue
-                val bytes = zin.readBytes()
-                if (bytes.size <= MAX_ENTRY) files[n] = bytes
-            }
+        for (e in zip.entries()) {
+            if (e.isDirectory) continue
+            val n = e.name
+            val low = n.lowercase()
+            val wanted = low.endsWith(".xhtml") || low.endsWith(".html") || low.endsWith(".htm") ||
+                low.endsWith(".xml") || low.endsWith(".opf") || low.endsWith(".ncx")
+            if (!wanted || e.size > MAX_ENTRY) continue
+            files[n] = zip.getInputStream(e).use { it.readBytes() }
         }
         if (files.isEmpty()) throw IllegalArgumentException("EPUB vazio")
+
+        // imagens aceitas (as muito pequenas, como enfeites e ícones, são ignoradas)
+        val imgCache = HashMap<String, String?>()
+        fun imageEntry(path: String): String? = imgCache.getOrPut(path) {
+            val e = zip.getEntry(path) ?: zip.getEntry(decode(path))
+            if (e == null) {
+                null
+            } else {
+                val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                try {
+                    zip.getInputStream(e).use { BitmapFactory.decodeStream(it, null, o) }
+                } catch (_: Throwable) {
+                }
+                if (o.outWidth in 1..79 || o.outHeight in 1..79) null else e.name
+            }
+        }
 
         // 2) acha o arquivo OPF
         val container = files["META-INF/container.xml"]
@@ -80,7 +98,7 @@ object EpubBook {
         for (path in spine) {
             val bytes = files[path] ?: files.entries.firstOrNull { decode(it.key) == path }?.value ?: continue
             fileStart[path] = paras.size
-            parseChapter(str(bytes), path, paras, links, anchors)
+            parseChapter(str(bytes), path, paras, links, anchors, ::imageEntry)
         }
 
         // 5) agrupa em páginas
@@ -94,6 +112,12 @@ object EpubBook {
             spans = ArrayList()
         }
         for ((i, p) in paras.withIndex()) {
+            if (p.image != null) {
+                flush()
+                paraPage[i] = pages.size
+                pages.add(Page("", emptyList(), p.image))
+                continue
+            }
             val addLen = p.text.length + (if (sb.isEmpty()) 0 else 2)
             if (sb.isNotEmpty() && (p.chapterStart || sb.length + addLen > PAGE_CHARS)) flush()
             if (sb.isNotEmpty()) sb.append("\n\n")
@@ -126,11 +150,11 @@ object EpubBook {
         "figcaption", "blockquote", "pre", "ul", "ol", "li", "dl", "dt", "dd", "table", "tr",
         "h1", "h2", "h3", "h4", "h5", "h6", "hr", "address", "body"
     )
-    private val skipTags = setOf("script", "style", "svg", "img", "image", "head", "title", "audio", "video")
+    private val skipTags = setOf("script", "style", "head", "title", "audio", "video")
 
     private fun parseChapter(
         html: String, path: String, paras: ArrayList<Para>, links: ArrayList<LinkRef>,
-        anchors: HashMap<String, Int>
+        anchors: HashMap<String, Int>, imageEntry: (String) -> String?
     ) {
         val doc = Jsoup.parse(html)
         val body = doc.body()
@@ -180,6 +204,18 @@ object EpubBook {
             val block = tag in blockTags
             if (block) flush()
             if (id.isNotEmpty()) anchors["$path#$id"] = paras.size
+            if (tag == "img" || tag == "image") {
+                val src = n.attr("src").ifEmpty { n.attr("xlink:href") }.ifEmpty { n.attr("href") }.trim()
+                if (src.isNotEmpty() && !src.lowercase().startsWith("data:")) {
+                    val entry = imageEntry(normalize(dir, decode(src.substringBefore('#'))))
+                    if (entry != null) {
+                        flush()
+                        paras.add(Para("", emptyList(), first, entry))
+                        first = false
+                    }
+                }
+                return
+            }
             if (tag == "br") {
                 if (sb.isNotEmpty() && sb[sb.length - 1] != '\n') sb.append('\n')
                 return

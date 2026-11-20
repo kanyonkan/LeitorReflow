@@ -141,42 +141,6 @@ class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
     }
 }
 
-/** REGISTRO DE DEPURAÇÃO TEMPORÁRIO (versão de teste): anota o que acontece nos saltos de página. */
-object Dbg {
-    private val sb = StringBuilder()
-    private val fmt = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
-    @Volatile private var until = 0L
-    private var budget = 0
-
-    @Synchronized fun log(m: String) {
-        sb.append(fmt.format(java.util.Date())).append(' ').append(m).append('\n')
-        if (sb.length > 90000) sb.delete(0, sb.length - 70000)
-    }
-
-    /** Liga o registro detalhado por [ms] milissegundos (limite de linhas por janela). */
-    @Synchronized fun arm(ms: Long) {
-        until = android.os.SystemClock.uptimeMillis() + ms
-        budget = 700
-    }
-
-    /** Registro detalhado, só dentro da janela ligada por [arm]. */
-    @Synchronized fun v(m: String) {
-        if (android.os.SystemClock.uptimeMillis() < until && budget > 0) {
-            budget--
-            log(m)
-        }
-    }
-
-    fun armed(): Boolean = android.os.SystemClock.uptimeMillis() < until
-
-    @Synchronized fun text(): String = sb.toString()
-    @Synchronized fun clear() = sb.setLength(0)
-
-    fun caller(): String = Throwable().stackTrace
-        .filter { it.className.startsWith("com.leitor") && !it.className.endsWith("Dbg") }
-        .drop(1).take(5).joinToString(" < ") { "${it.methodName}:${it.lineNumber}" }
-}
-
 /** LinearLayoutManager que permite travar a rolagem lateral feita com o dedo. */
 class PagerLayoutManager(context: Context, orientation: Int) :
     LinearLayoutManager(context, orientation, false) {
@@ -184,7 +148,7 @@ class PagerLayoutManager(context: Context, orientation: Int) :
 
     /**
      * Posição do último salto direto. Durante o processamento do Refluxo cada atualização de página
-     * fazia a lista se re-ancorar sozinha numa página antiga (o registro mostra a lista voltando a
+     * fazia a lista se re-ancorar sozinha numa página antiga (a lista voltava a
      * ela sem nenhuma rolagem). Enquanto o usuário (ou uma rolagem animada) não mexer na lista,
      * cada novo layout reafirma o destino do salto.
      */
@@ -192,21 +156,18 @@ class PagerLayoutManager(context: Context, orientation: Int) :
     private var stickOff = 0
 
     override fun scrollToPositionWithOffset(position: Int, offset: Int) {
-        Dbg.v("LM.scrollToPositionWithOffset pos=$position off=$offset por ${Dbg.caller()}")
         stickPos = position
         stickOff = offset
         super.scrollToPositionWithOffset(position, offset)
     }
 
     override fun scrollToPosition(position: Int) {
-        Dbg.v("LM.scrollToPosition pos=$position por ${Dbg.caller()}")
         stickPos = position
         stickOff = 0
         super.scrollToPosition(position)
     }
 
     override fun startSmoothScroll(smoothScroller: RecyclerView.SmoothScroller) {
-        Dbg.v("LM.startSmoothScroll alvo=${smoothScroller.targetPosition} por ${Dbg.caller()}")
         stickPos = -1
         super.startSmoothScroll(smoothScroller)
     }
@@ -220,8 +181,6 @@ class PagerLayoutManager(context: Context, orientation: Int) :
         if (stickPos >= 0 && !state.isPreLayout && state.itemCount > stickPos) {
             // sempre reafirma: o registro mostrou layouts que, mesmo com a lista no destino,
             // se ancoravam na página antiga (a lista alternava entre o destino e a página antiga)
-            val f = findFirstVisibleItemPosition()
-            if (f != stickPos) Dbg.v("LM.reafirma salto: primeira=$f -> $stickPos")
             super.scrollToPositionWithOffset(stickPos, stickOff)
         } else if (state.itemCount <= stickPos) {
             stickPos = -1
@@ -232,30 +191,15 @@ class PagerLayoutManager(context: Context, orientation: Int) :
     override fun scrollVerticallyBy(dy: Int, recycler: RecyclerView.Recycler, state: RecyclerView.State): Int {
         if (dy != 0) stickPos = -1
         val r = super.scrollVerticallyBy(dy, recycler, state)
-        if (dy != 0) Dbg.v("LM.scrollV pedido=$dy feito=$r first=${findFirstVisibleItemPosition()}")
         return r
     }
 
     override fun scrollHorizontallyBy(dx: Int, recycler: RecyclerView.Recycler, state: RecyclerView.State): Int {
         if (dx != 0) stickPos = -1
         val r = super.scrollHorizontallyBy(dx, recycler, state)
-        if (dx != 0) Dbg.v("LM.scrollH pedido=$dx feito=$r first=${findFirstVisibleItemPosition()}")
         return r
     }
 
-    override fun onLayoutCompleted(state: RecyclerView.State?) {
-        super.onLayoutCompleted(state)
-        if (Dbg.armed()) {
-            val f = findFirstVisibleItemPosition()
-            val v = findViewByPosition(f)
-            Dbg.v("LM.layout first=$f top=${v?.top} left=${v?.left} itens=${state?.itemCount} alvo=${state?.targetScrollPosition}")
-        }
-    }
-
-    override fun onItemsUpdated(recyclerView: RecyclerView, positionStart: Int, itemCount: Int, payload: Any?) {
-        Dbg.v("LM.itemsAtualizados de=$positionStart qtd=$itemCount")
-        super.onItemsUpdated(recyclerView, positionStart, itemCount, payload)
-    }
     override fun canScrollHorizontally(): Boolean = userScrollEnabled && super.canScrollHorizontally()
 
     // o texto selecionável do Refluxo pede foco a cada atualização da página; com isso a lista
@@ -411,7 +355,10 @@ class MainActivity : AppCompatActivity() {
         const val REFLOW_CACHE_VERSION = 1 // mude quando o método de extração mudar
     }
 
-    private class PageText(val text: String, val spans: List<Reflow.Span>, val loaded: Boolean = true)
+    private class PageText(
+        val text: String, val spans: List<Reflow.Span>, val loaded: Boolean = true,
+        val image: String? = null // EPUB: figura desta página (nome da parte dentro do zip)
+    )
     private class ReflowData(val targets: List<LinkTarget>, val pages: List<PageText>)
 
     private val main = Handler(Looper.getMainLooper())
@@ -422,6 +369,14 @@ class MainActivity : AppCompatActivity() {
     private var pagesUri: Uri? = null
     private var pagesComplete = false
     private var docIsEpub = false // arquivo aberto é EPUB (só Refluxo, sem modo Original)
+    private var epubFile: File? = null // cópia do EPUB aberto (acesso direto às figuras)
+    @Volatile private var epubZip: java.util.zip.ZipFile? = null
+    private val imgExec = Executors.newFixedThreadPool(2)
+    private val epubBmp = object : LruCache<String, Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 8).toInt().coerceAtLeast(8 * 1024 * 1024)
+    ) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
 
     // ---- modo original (imagem das páginas) ----
     private val sizes = ArrayList<IntArray>() // [largura, altura] de cada página
@@ -527,7 +482,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var bar: LinearLayout
     private lateinit var status: TextView
     private lateinit var pageIndicator: TextView
-    private lateinit var progressView: TextView
     private lateinit var modeBtn: Button
     private lateinit var themeBtn: Button
     private lateinit var layoutBtn: Button
@@ -570,9 +524,9 @@ class MainActivity : AppCompatActivity() {
         val b = AlertDialog.Builder(this)
             .setTitle("Abrir este arquivo:")
             .setMessage(
-                if (canNew) "Em uma nova janela, o PDF atual continua aberto. Nesta janela, o PDF atual é " +
+                if (canNew) "Em uma nova janela, o arquivo atual continua aberto. Nesta janela, o arquivo atual é " +
                     "fechado (as configurações dele ficam guardadas)."
-                else "Já há $MAX_WINDOWS PDFs abertos. Para abrir outro, ele substitui o desta janela " +
+                else "Já há $MAX_WINDOWS arquivos abertos. Para abrir outro, ele substitui o desta janela " +
                     "(as configurações do atual ficam guardadas), ou feche uma das outras janelas."
             )
             .setNegativeButton("Cancelar", null)
@@ -783,9 +737,6 @@ class MainActivity : AppCompatActivity() {
             return true
         }
         tapDetector.onTouchEvent(ev)
-        if (Dbg.armed() && (ev.actionMasked == MotionEvent.ACTION_DOWN || ev.actionMasked == MotionEvent.ACTION_UP)) {
-            Dbg.v("toque ${if (ev.actionMasked == MotionEvent.ACTION_DOWN) "DOWN" else "UP"} x=${ev.x.toInt()} y=${ev.y.toInt()}")
-        }
         val zoomedBook = isBook && !reflowMode && zoom > 1f
         if (zoomedBook) {
             // arrasto para os lados com zoom: as páginas formam uma "faixa" contínua (ver handleStrip)
@@ -1024,12 +975,10 @@ class MainActivity : AppCompatActivity() {
         }
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
-                Dbg.v("onScrolled dx=$dx dy=$dy first=${lm().findFirstVisibleItemPosition()}")
                 updatePageIndicator()
             }
 
             override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
-                Dbg.v("estadoRolagem=$newState alignTarget=$alignTarget")
                 if (newState == RecyclerView.SCROLL_STATE_IDLE) {
                     updatePageIndicator()
                     // terminou uma corrida por deslize rápido: encaixa na página mais próxima
@@ -1074,7 +1023,7 @@ class MainActivity : AppCompatActivity() {
         }
         layoutBtn = makeBtn("") { cyclePageLayout() }
         val centerBtn = makeBtn("Centralizar") { centerPage() }
-        settingsBtn = makeBtn("Configurar PDF") { showSettings() }
+        settingsBtn = makeBtn("Configurar") { showSettings() }
         row2.addView(layoutBtn)
         row2.addView(centerBtn)
         row2.addView(settingsBtn)
@@ -1084,29 +1033,8 @@ class MainActivity : AppCompatActivity() {
         row2Lp.topMargin = dp(2)
         bar.addView(row2, row2Lp)
 
-        // --- VERSÃO DE TESTE: copia o registro de depuração (toque longo limpa) ---
-        val dbgBtn = makeBtn("Registro (teste): toque = copiar, segurar = limpar") {
-            val head = "LeitorReflow registro de teste | ${android.os.Build.MODEL} | Android ${android.os.Build.VERSION.RELEASE}\n"
-            val txt = head + Dbg.text()
-            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                .setPrimaryClip(ClipData.newPlainText("registro", txt))
-            Toast.makeText(this, "Registro copiado (${txt.count { it == '\n' }} linhas). Cole no chat.", Toast.LENGTH_LONG).show()
-        }
-        dbgBtn.setOnLongClickListener {
-            Dbg.clear()
-            Toast.makeText(this, "Registro limpo.", Toast.LENGTH_SHORT).show()
-            true
-        }
-        val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row3.addView(dbgBtn)
-        val row3Lp = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-        row3Lp.topMargin = dp(2)
-        bar.addView(row3, row3Lp)
-
         status = TextView(this).apply {
-            text = "Toque em Abrir e escolha um PDF."
+            text = "Toque em Abrir e escolha um PDF ou EPUB."
             textSize = 13f
             setPadding(dp(10), dp(6), dp(10), dp(2))
         }
@@ -1144,28 +1072,6 @@ class MainActivity : AppCompatActivity() {
         indLp.bottomMargin = dp(14)
         root.addView(pageIndicator, indLp)
         pageIndicator.setOnClickListener { showGoToDialog() } // toque no número: ir para a página
-
-        // indicador do processamento do Refluxo (canto inferior esquerdo; não recebe toques)
-        progressView = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 12f
-            setPadding(dp(10), dp(5), dp(10), dp(5))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#CC222222"))
-                cornerRadius = dp(14).toFloat()
-            }
-            isClickable = false
-            visibility = View.GONE
-        }
-        root.addView(
-            progressView,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            ).apply { bottomMargin = dp(14) }
-        )
-        pageIndicator.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> positionProgress() }
 
         // barra da seleção de texto (modo Original)
         selBar = LinearLayout(this).apply {
@@ -1222,10 +1128,6 @@ class MainActivity : AppCompatActivity() {
             override fun handleOnBackPressed() {
                 if (backStack.isNotEmpty()) {
                     val pos = backStack.removeAt(backStack.size - 1)
-                    Dbg.arm(6000)
-                    Dbg.log("=== VOLTAR (botão do Android) para a página ${pos + 1} (índice $pos)")
-                    dbgSnap("antes")
-                    dbgSchedule("voltar")
                     if (reflowMode && !pagesComplete) {
                         // durante o processamento do Refluxo, a mesma rolagem rápida do salto de ida
                         jumpToPage(pos.coerceIn(0, (list.adapter?.itemCount ?: 1) - 1))
@@ -1265,9 +1167,9 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Abrir este arquivo:")
             .setCancelable(false)
             .setMessage(
-                if (canNew) "Em uma nova janela, o PDF que você estava lendo continua aberto. " +
+                if (canNew) "Em uma nova janela, o arquivo que você estava lendo continua aberto. " +
                     "Nesta janela, ele é fechado e substituído (as configurações dele ficam guardadas)."
-                else "Já há $MAX_WINDOWS PDFs abertos. Nesta janela, o PDF que você estava lendo é " +
+                else "Já há $MAX_WINDOWS arquivos abertos. Nesta janela, o arquivo que você estava lendo é " +
                     "fechado e substituído (as configurações dele ficam guardadas)."
             )
             .setNegativeButton("Cancelar") { _, _ -> finish() }
@@ -1321,6 +1223,9 @@ class MainActivity : AppCompatActivity() {
         loadToken++
         closeRenderer()
         renderExec.shutdownNow()
+        try { epubZip?.close() } catch (_: Throwable) {}
+        try { epubFile?.delete() } catch (_: Throwable) {}
+        imgExec.shutdownNow()
         textExec.execute {
             synchronized(docLock) {
                 try { sharedDoc?.close() } catch (_: Throwable) {}
@@ -1349,7 +1254,7 @@ class MainActivity : AppCompatActivity() {
         }
 
     private fun updateLabels() {
-        modeBtn.text = if (docIsEpub) "EPUB: só Refluxo" else if (reflowMode) "Modo: Refluxo" else "Modo: Original"
+        modeBtn.text = if (docIsEpub) "EPUB: só Refluxo" else if (reflowMode) "PDF: Refluxo" else "PDF: Original"
         themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
         layoutBtn.text = if (isBook) "Páginas: Horizontal" else "Páginas: Vertical"
     }
@@ -1512,7 +1417,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSettings() {
         if (currentUri == null) {
-            Toast.makeText(this, "Abra um PDF para configurar.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Abra um arquivo para configurar.", Toast.LENGTH_SHORT).show()
             return
         }
         val prefs = getSharedPreferences("leitor", MODE_PRIVATE)
@@ -1560,16 +1465,16 @@ class MainActivity : AppCompatActivity() {
             if (c) saveDocSettings()
         })
         box.addView(TextView(this).apply {
-            text = "Vale só para este PDF. Com \"Sim\", ao abrir este PDF de novo ele volta como você " +
+            text = "Vale só para este arquivo. Com \"Sim\", ao abrir este arquivo de novo ele volta como você " +
                 "deixou. Com \"Não\", ele começa no padrão: primeira página, zoom x1 (e texto no " +
-                "tamanho padrão) e sem centralização, modo Original, deslizamento na horizontal e modo Dia. PDFs novos sempre " +
-                "começam com tudo em \"Não\"."
+                "tamanho padrão) e sem centralização, modo Original (nos PDFs), deslizamento na horizontal e modo Dia. " +
+                "Arquivos novos sempre começam com tudo em \"Não\"."
             textSize = 12f
             alpha = 0.7f
             setPadding(0, dp(8), 0, dp(4))
         })
         AlertDialog.Builder(this)
-            .setTitle("Neste PDF:")
+            .setTitle("Neste arquivo:")
             .setView(box)
             .setPositiveButton("Fechar", null)
             .show()
@@ -1685,7 +1590,6 @@ class MainActivity : AppCompatActivity() {
         val n = list.adapter?.itemCount ?: 0
         if (n == 0 || !barVisible) {
             pageIndicator.visibility = View.GONE
-            positionProgress()
             return
         }
         val p = (currentPage() + 1).coerceIn(1, n)
@@ -1711,7 +1615,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restorePending() {
-        Dbg.v("restorePending pendingPage=$pendingPage")
         val p = pendingPage
         if (p < 0) return
         val count = list.adapter?.itemCount ?: 0
@@ -1835,13 +1738,11 @@ class MainActivity : AppCompatActivity() {
     private val pausedChanges = LinkedHashSet<Int>()
 
     private fun notifyPage(i: Int) {
-        Dbg.v("processada página ${i + 1} pausado=$uiPaused foco=$reflowFocus first=${lm().findFirstVisibleItemPosition()}")
         if (uiPaused) pausedChanges.add(i) else reflowAdapter.notifyItemChanged(i)
     }
 
     private fun resumeUi() {
         if (!uiPaused) return
-        Dbg.v("resumeUi: libera ${pausedChanges.size} atualizações guardadas")
         uiPaused = false
         val l = ArrayList(pausedChanges)
         pausedChanges.clear()
@@ -1854,7 +1755,6 @@ class MainActivity : AppCompatActivity() {
      * LinearLayoutManager se ancora nessa página e devolve a lista ao ponto de partida. Tira o foco.
      */
     private fun dropFocus() {
-        Dbg.v("dropFocus: filho com foco=${list.focusedChild != null}")
         val old = list.descendantFocusability
         list.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         list.focusedChild?.clearFocus()
@@ -1863,7 +1763,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun endGlide(t: Int) {
-        Dbg.v("endGlide alvo=$t")
         focusLock = -1
         resumeUi()
         list.post { alignToPage(t) }
@@ -1903,7 +1802,6 @@ class MainActivity : AppCompatActivity() {
      */
     private fun jumpToPage(t: Int, tries: Int = 8) {
         val seq = ++glideSeq
-        Dbg.v("jumpToPage alvo=$t seq=$seq")
         focusLock = t
         reflowFocus = t
         uiPaused = true
@@ -1917,7 +1815,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyJump(t: Int) {
-        Dbg.v("applyJump alvo=$t")
         if ((list.adapter?.itemCount ?: 0) <= t) return
         dropFocus()
         lm().scrollToPositionWithOffset(t, if (isBook) 0 else pageTopY() - list.paddingTop)
@@ -1927,7 +1824,6 @@ class MainActivity : AppCompatActivity() {
     private fun watchJump(seq: Int, t: Int, tries: Int, waits: Int = 20) {
         list.postDelayed({
             if (seq != glideSeq) {
-                Dbg.v("watchJump cancelado (seq=$seq atual=$glideSeq)")
                 return@postDelayed // outro salto, ou o usuário tocou na tela
             }
             if (list.scrollState != RecyclerView.SCROLL_STATE_IDLE) {
@@ -1937,7 +1833,6 @@ class MainActivity : AppCompatActivity() {
             val tv = lm().findViewByPosition(t)
             val ok = lm().findFirstVisibleItemPosition() == t && tv != null &&
                 (if (isBook) abs(tv.left) <= 1 else abs(tv.top - pageTopY()) <= 1)
-            Dbg.v("watchJump alvo=$t first=${lm().findFirstVisibleItemPosition()} top=${tv?.top} left=${tv?.left} ok=$ok tentativasRestantes=$tries")
             if (ok || tries <= 0) {
                 endGlide(t)
             } else {
@@ -2082,10 +1977,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Essa página ainda não foi carregada.", Toast.LENGTH_SHORT).show()
             return
         }
-        Dbg.arm(6000)
-        Dbg.log("=== SALTO pedido para a página ${n + 1} (índice $n)")
-        dbgSnap("antes")
-        dbgSchedule("salto")
         backStack.add(currentPage())
         if (reflowMode && !pagesComplete) {
             // durante o processamento do Refluxo o salto direto se perdia (a lista é atualizada o
@@ -2096,22 +1987,6 @@ class MainActivity : AppCompatActivity() {
         }
         // modo Original: mantém a centralização ajustada ao seguir o link; no Refluxo volta ao início
         if (reflowMode) hScroll.scrollTo(0, 0)
-    }
-
-    private fun dbgSnap(tag: String) {
-        val f = lm().findFirstVisibleItemPosition()
-        val v = lm().findViewByPosition(f)
-        Dbg.log(
-            "$tag: first=$f top=${v?.top} left=${v?.left} altura=${v?.height} itens=${list.adapter?.itemCount} " +
-                "estado=${list.scrollState} reflow=$reflowMode completo=$pagesComplete horizontal=$isBook " +
-                "foco=$reflowFocus trava=$focusLock pausado=$uiPaused pilha=${backStack.size}"
-        )
-    }
-
-    private fun dbgSchedule(tag: String) {
-        for (ms in longArrayOf(60, 200, 500, 1000, 2000, 3500, 5500)) {
-            list.postDelayed({ dbgSnap("$tag +${ms}ms") }, ms)
-        }
     }
 
     private fun openUrl(raw: String) {
@@ -2233,46 +2108,10 @@ class MainActivity : AppCompatActivity() {
         else if (reflowMode) showReflow(uri, token) else showOriginal(uri, token)
     }
 
-    private val hideProgressRunnable = Runnable { progressView.visibility = View.GONE }
-
-    /** Mostra o andamento do processamento do Refluxo; ao terminar, avisa e some em seguida. */
-    private fun setReflowProgress(done: Int, total: Int) {
-        main.removeCallbacks(hideProgressRunnable)
-        positionProgress()
-        if (total <= 0) {
-            progressView.visibility = View.GONE
-            return
-        }
-        if (done >= total) {
-            progressView.visibility = View.GONE // chegou a 100%: fecha sozinho
-        } else {
-            progressView.text = "Processando refluxo… ${done * 100 / total}%"
-            progressView.visibility = View.VISIBLE
-        }
-    }
-
-    /** Mantém o indicador de progresso colado acima do botão da página, centralizado. */
-    private fun positionProgress() {
-        val ind = pageIndicator.layoutParams as FrameLayout.LayoutParams
-        val h = if (pageIndicator.visibility == View.VISIBLE) pageIndicator.height else 0
-        val nb = ind.bottomMargin + h
-        val lp = progressView.layoutParams as FrameLayout.LayoutParams
-        if (lp.bottomMargin != nb) {
-            lp.bottomMargin = nb
-            progressView.layoutParams = lp
-        }
-    }
-
-    private fun hideReflowProgress() {
-        main.removeCallbacks(hideProgressRunnable)
-        progressView.visibility = View.GONE
-    }
-
     private fun showReflow(uri: Uri, token: Int) {
         if (pagesUri == uri && pagesComplete) {
             reflowAdapter.notifyDataSetChanged()
             status.text = "${pages.size} páginas · refluxo"
-            hideReflowProgress()
             restorePending()
             pendingPage = -1
             updatePageIndicator()
@@ -2287,9 +2126,6 @@ class MainActivity : AppCompatActivity() {
         pagesComplete = false
         reflowAdapter.notifyDataSetChanged()
         status.text = "Abrindo…"
-        progressView.text = "Processando refluxo… 0%"
-        positionProgress()
-        progressView.visibility = View.VISIBLE
         val cacheFile = reflowCacheFile(currentKey)
         val startHint = pendingPage // página em que você está: é extraída primeiro
 
@@ -2304,7 +2140,6 @@ class MainActivity : AppCompatActivity() {
                         pages.addAll(cached.pages)
                         reflowAdapter.notifyDataSetChanged()
                         status.text = "${pages.size} páginas · refluxo"
-                        hideReflowProgress()
                         pagesComplete = true
                         restorePending()
                         pendingPage = -1
@@ -2323,7 +2158,6 @@ class MainActivity : AppCompatActivity() {
                     for (k in 0 until total) pages.add(PageText("", emptyList(), false))
                     reflowAdapter.notifyDataSetChanged()
                     status.text = "Carregando… 0 de $total páginas"
-                    setReflowProgress(0, total)
                     restorePending()
                     updatePageIndicator()
                 }
@@ -2375,7 +2209,6 @@ class MainActivity : AppCompatActivity() {
                         }
                         status.text = if (d < total) "Carregando… $d de $total páginas"
                         else "$total páginas · refluxo"
-                        setReflowProgress(d, total)
                         if (d >= total) resumeUi()
                         if (d == total) {
                             pagesComplete = true
@@ -2389,7 +2222,6 @@ class MainActivity : AppCompatActivity() {
                 if (withText == 0) {
                     main.post {
                         if (token != loadToken) return@post
-                        hideReflowProgress()
                         status.text =
                             "Este PDF não tem texto (é só imagem). Use o modo Original ou faça o OCR."
                     }
@@ -2398,7 +2230,6 @@ class MainActivity : AppCompatActivity() {
                 main.post {
                     if (token != loadToken) return@post
                     status.text = "Não foi possível abrir o PDF."
-                    hideReflowProgress()
                     Toast.makeText(this@MainActivity, "Não foi possível abrir o PDF.", Toast.LENGTH_LONG).show()
                     Toast.makeText(this, e.message ?: "Erro", Toast.LENGTH_LONG).show()
                 }
@@ -2411,7 +2242,6 @@ class MainActivity : AppCompatActivity() {
         if (pagesUri == uri && pagesComplete) {
             reflowAdapter.notifyDataSetChanged()
             status.text = "${pages.size} páginas · EPUB"
-            hideReflowProgress()
             restorePending()
             pendingPage = -1
             updatePageIndicator()
@@ -2426,20 +2256,25 @@ class MainActivity : AppCompatActivity() {
         pagesComplete = false
         reflowAdapter.notifyDataSetChanged()
         status.text = "Abrindo EPUB…"
-        progressView.text = "Lendo EPUB…"
-        positionProgress()
-        progressView.visibility = View.VISIBLE
         Thread {
             try {
-                val book = contentResolver.openInputStream(uri)?.use { EpubBook.load(it) }
+                // copia o EPUB para um arquivo: o zip precisa de acesso direto para ler as figuras
+                val old = epubZip
+                epubZip = null
+                try { old?.close() } catch (_: Throwable) {}
+                val f = File(cacheDir, "epub_${System.identityHashCode(this@MainActivity)}.epub")
+                contentResolver.openInputStream(uri)?.use { ins -> f.outputStream().use { ins.copyTo(it) } }
                     ?: throw IllegalStateException("Não foi possível ler o arquivo")
+                epubFile = f
+                val book = EpubBook.load(f)
+                epubZip = java.util.zip.ZipFile(f)
                 main.post {
                     if (token != loadToken) return@post
+                    epubBmp.evictAll()
                     reflowTargets.addAll(book.targets)
-                    for (p in book.pages) pages.add(PageText(p.text, p.spans))
+                    for (p in book.pages) pages.add(PageText(p.text, p.spans, true, p.image))
                     reflowAdapter.notifyDataSetChanged()
                     status.text = "${pages.size} páginas · EPUB"
-                    hideReflowProgress()
                     pagesComplete = true
                     restorePending()
                     pendingPage = -1
@@ -2449,7 +2284,6 @@ class MainActivity : AppCompatActivity() {
                 main.post {
                     if (token != loadToken) return@post
                     status.text = "Não foi possível abrir o EPUB."
-                    hideReflowProgress()
                     Toast.makeText(this@MainActivity, "Não foi possível abrir o EPUB: ${e.message ?: "erro"}", Toast.LENGTH_LONG).show()
                 }
             }
@@ -2550,7 +2384,6 @@ class MainActivity : AppCompatActivity() {
         imageAdapter.notifyDataSetChanged()
         infoRequested.clear()
         status.text = "Abrindo…"
-        hideReflowProgress()
 
         Thread {
             var fd: ParcelFileDescriptor? = null
@@ -2735,12 +2568,8 @@ class MainActivity : AppCompatActivity() {
         java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFC).lowercase()
 
     private fun showSearchDialog() {
-        if (docIsEpub) {
-            Toast.makeText(this, "A busca ainda só funciona em PDF.", Toast.LENGTH_SHORT).show()
-            return
-        }
         if (currentUri == null) {
-            Toast.makeText(this, "Abra um PDF primeiro.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Abra um arquivo primeiro.", Toast.LENGTH_SHORT).show()
             return
         }
         val input = EditText(this).apply {
@@ -2798,6 +2627,9 @@ class MainActivity : AppCompatActivity() {
             searchDocUri = uri
         }
         val my = ++searchToken
+        // EPUB: o texto já está na memória (só as páginas já carregadas, que no EPUB são todas)
+        val epubTexts: List<String>? =
+            if (docIsEpub) pages.map { it.text.replace(wsRegex, " ").trim() } else null
         val snapshot = ArrayList(pageTexts)
         val snapshotF = ArrayList(pageFolded)
         val dlg = AlertDialog.Builder(this)
@@ -2811,7 +2643,7 @@ class MainActivity : AppCompatActivity() {
         Thread {
             try {
                 val stripper = PDFTextStripper()
-                val total = synchronized(docLock) { ensureDoc(uri).numberOfPages }
+                val total = epubTexts?.size ?: synchronized(docLock) { ensureDoc(uri).numberOfPages }
                 val hits = ArrayList<SearchHit>()
                 var batchStart = snapshot.size
                 val bt = ArrayList<String>()
@@ -2841,7 +2673,10 @@ class MainActivity : AppCompatActivity() {
                     }
                     val txt: String
                     val plain: String // sem acentos (é o que fica em cache)
-                    if (i < snapshot.size) {
+                    if (epubTexts != null) {
+                        txt = epubTexts[i]
+                        plain = fold(txt)
+                    } else if (i < snapshot.size) {
                         txt = snapshot[i]
                         plain = snapshotF[i]
                     } else {
@@ -2895,7 +2730,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Throwable) {
                 main.post {
                     dlg.dismiss()
-                    Toast.makeText(this, "Não foi possível buscar neste PDF.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "Não foi possível buscar neste arquivo.", Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
@@ -2908,7 +2743,7 @@ class MainActivity : AppCompatActivity() {
         if (hits.isEmpty()) {
             AlertDialog.Builder(this)
                 .setTitle("Buscar")
-                .setMessage("Nenhum resultado para “$query”.\n\nPDFs só de imagem não têm texto para buscar.")
+                .setMessage("Nenhum resultado para “$query”." + if (docIsEpub) "" else "\n\nPDFs só de imagem não têm texto para buscar.")
                 .setPositiveButton("OK", null)
                 .show()
             return
@@ -3265,6 +3100,32 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Lê e reduz uma figura do EPUB fora da tela principal; [done] roda na tela principal. */
+    private fun loadEpubImage(name: String, done: (Bitmap?) -> Unit) {
+        epubBmp.get(name)?.let { done(it); return }
+        val zip = epubZip ?: return
+        val maxW = resources.displayMetrics.widthPixels
+        val maxH = resources.displayMetrics.heightPixels
+        try {
+            imgExec.execute {
+                val bmp = try {
+                    val e = zip.getEntry(name) ?: throw IllegalStateException()
+                    val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    zip.getInputStream(e).use { android.graphics.BitmapFactory.decodeStream(it, null, o) }
+                    var sample = 1
+                    while (o.outWidth / (sample * 2) >= maxW && o.outHeight / (sample * 2) >= maxH) sample *= 2
+                    val o2 = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                    zip.getInputStream(e).use { android.graphics.BitmapFactory.decodeStream(it, null, o2) }
+                } catch (_: Throwable) {
+                    null
+                }
+                if (bmp != null) epubBmp.put(name, bmp)
+                main.post { done(bmp) }
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     private fun closeRenderer() {
         synchronized(rendererLock) {
             try { renderer?.close() } catch (_: Throwable) {}
@@ -3292,7 +3153,7 @@ class MainActivity : AppCompatActivity() {
 
     private inner class ReflowAdapter : RecyclerView.Adapter<ReflowAdapter.VH>() {
 
-        inner class VH(val root: View, val label: TextView, val body: LinkTextView) :
+        inner class VH(val root: View, val label: TextView, val body: LinkTextView, val img: ImageView) :
             RecyclerView.ViewHolder(root)
 
         override fun getItemViewType(position: Int): Int = if (isBook) 1 else 0
@@ -3318,7 +3179,16 @@ class MainActivity : AppCompatActivity() {
                 typeface = Typeface.SERIF
                 setLineSpacing(0f, 1.4f)
             }
+            val img = ImageView(parent.context).apply {
+                adjustViewBounds = true
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                visibility = View.GONE
+            }
             box.addView(label)
+            box.addView(
+                img,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            )
             box.addView(body)
             if (book) {
                 // uma página por tela; se o texto for maior que a tela, rola na vertical dentro dela
@@ -3334,24 +3204,38 @@ class MainActivity : AppCompatActivity() {
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
                     )
                 )
-                return VH(sv, label, body)
+                return VH(sv, label, body, img)
             }
             box.layoutParams = RecyclerView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             )
-            return VH(box, label, body)
+            return VH(box, label, body, img)
         }
 
         override fun getItemCount() = pages.size
 
         override fun onBindViewHolder(h: VH, position: Int) {
-            Dbg.v("bind página ${position + 1}")
             val fg = if (night) Color.parseColor("#D6D3CB") else Color.parseColor("#1B1B1B")
             val pt = pages[position]
             val content = if (!pt.loaded) "Carregando página…" else pt.text.ifBlank { "(página sem texto)" }
 
             h.label.setTextColor(fg)
             h.label.text = "— ${position + 1} —"
+
+            // EPUB: página com figura
+            val imgName = pt.image
+            if (imgName != null) {
+                h.img.visibility = View.VISIBLE
+                h.img.maxHeight = (resources.displayMetrics.heightPixels * 0.85f).toInt()
+                h.img.tag = imgName
+                h.img.setImageDrawable(null)
+                loadEpubImage(imgName) { bmp -> if (h.img.tag == imgName) h.img.setImageBitmap(bmp) }
+            } else {
+                h.img.tag = null
+                h.img.setImageDrawable(null)
+                h.img.visibility = View.GONE
+            }
+            h.body.visibility = if (imgName != null && pt.text.isBlank()) View.GONE else View.VISIBLE
 
             // desliga a seleção antes de trocar o texto (evita falhas ao reciclar)
             h.body.setTextIsSelectable(false)
