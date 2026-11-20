@@ -337,6 +337,8 @@ class MainActivity : AppCompatActivity() {
         const val EXTRA_NEW_WINDOW = "novaJanela" // aberta por este app: não pergunta de novo
         const val ZOOM_MAX = 3.75f // 15 níveis de 0.25 (eram 10: 2.5f)
         const val ZOOM_STEP = 0.25f
+        const val ZOOM_MIN = 0.75f // mesma escala do Refluxo: níveis de 1/16 (1 sp), de x0,75 até ZOOM_MAX
+        const val ZOOM_UNIT = 1f / 16f
         // velocidade mínima (px/s) para o deslize virar a página; abaixo disso só move a página
         const val FAST_SWIPE = 1200f
         // distância da inércia do deslize = velocidade (px/s) x este tempo, limitada à página
@@ -455,6 +457,8 @@ class MainActivity : AppCompatActivity() {
     private var keepMode = false // deste PDF: lembrar o modo (Original/Refluxo)
     private var keepLayout = false // deste PDF: lembrar o deslizamento (Vertical/Horizontal)
     private var keepNight = false // deste PDF: lembrar Dia/Noite
+    private var keepRot = false // deste PDF: lembrar a rotação da tela
+    private var rotation = 0 // 0 = automática/padrão, 1..3 = 90°, 180°, 270° à direita
     private var barVisible = true
     private var loadToken = 0
     private var listWidth = 0
@@ -671,7 +675,7 @@ class MainActivity : AppCompatActivity() {
                     textSp = (textSp * d.scaleFactor).coerceIn(TEXT_MIN, TEXT_MAX)
                     reflowAdapter.applyTextSizeToVisible()
                 } else {
-                    val target = (zoom * pinchFactor * d.scaleFactor).coerceIn(1f, ZOOM_MAX)
+                    val target = (zoom * pinchFactor * d.scaleFactor).coerceIn(ZOOM_MIN, ZOOM_MAX)
                     pinchFactor = target / zoom
                     hScroll.pivotX = d.focusX
                     hScroll.pivotY = d.focusY
@@ -1036,8 +1040,13 @@ class MainActivity : AppCompatActivity() {
         layoutBtn = makeBtn("") { cyclePageLayout() }
         val centerBtn = makeBtn("Centralizar") { centerPage() }
         settingsBtn = makeBtn("Configurar") { showSettings() }
+        val rotBtn = makeBtn("\u21BB") { rotateScreen() }
+        rotBtn.textSize = 18f
+        rotBtn.contentDescription = "Girar a tela 90° para a direita"
+        rotBtn.layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { setMargins(dp(2), 0, dp(2), 0) }
         row2.addView(layoutBtn)
         row2.addView(centerBtn)
+        row2.addView(rotBtn)
         row2.addView(settingsBtn)
         val row2Lp = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1288,21 +1297,43 @@ class MainActivity : AppCompatActivity() {
         updatePageIndicator() // o número da página aparece e some junto com o menu
     }
 
+    /** Próximo nível padrão (grade de 1 em 1 sp = 1/16) no sentido pedido, a partir de um valor qualquer. */
+    private fun snapLevel(cur: Float, dir: Int): Float {
+        val eps = 0.001f
+        return if (dir > 0) kotlin.math.floor(cur + eps) + 1f else kotlin.math.ceil(cur - eps) - 1f
+    }
+
+    private fun applyRotation() {
+        requestedOrientation = when (rotation) {
+            1 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+            2 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
+            3 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            else -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
+    private fun rotateScreen() {
+        rotation = (rotation + 1) % 4
+        applyRotation()
+        saveDocSettings()
+    }
+
     private fun changeSize(dir: Int) {
         if (reflowMode) {
-            textSp = (textSp + dir).coerceIn(TEXT_MIN, TEXT_MAX)
+            textSp = snapLevel(textSp, dir).coerceIn(TEXT_MIN, TEXT_MAX)
             saveDocSettings()
             reflowAdapter.notifyDataSetChanged()
             updatePageIndicator()
         } else {
-            setZoom(zoom + dir * ZOOM_STEP, resources.displayMetrics.widthPixels / 2f)
+            val sp = snapLevel(zoom * 16f, dir)
+            setZoom(sp * ZOOM_UNIT, resources.displayMetrics.widthPixels / 2f)
         }
     }
 
     /** Zoom do modo original: mantém a página em que você está e o ponto focal. */
     private fun setZoom(newZoom: Float, focusX: Float) {
         val old = zoom
-        zoom = newZoom.coerceIn(1f, ZOOM_MAX)
+        zoom = newZoom.coerceIn(ZOOM_MIN, ZOOM_MAX)
         if (zoom == old) return
         saveDocSettings()
 
@@ -1358,6 +1389,7 @@ class MainActivity : AppCompatActivity() {
         if (keepMode) e.putBoolean(dk("reflow"), reflowMode)
         if (keepLayout) e.putInt(dk("layout"), pageLayout)
         if (keepNight) e.putBoolean(dk("night"), night)
+        if (keepRot) e.putInt(dk("rot"), rotation)
         e.apply()
     }
 
@@ -1485,10 +1517,15 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putBoolean(dk("remN"), c).apply()
             if (c) saveDocSettings()
         })
+        box.addView(row("Lembrar rotação", keepRot) { c ->
+            keepRot = c
+            prefs.edit().putBoolean(dk("remR"), c).apply()
+            if (c) saveDocSettings()
+        })
         box.addView(TextView(this).apply {
             text = "Lembrar neste arquivo: Com \"Sim\", ao abrir este arquivo de novo ele volta como você " +
                 "deixou. Com \"Não\", ele começa no padrão: primeira página, zoom x1, texto no tamanho " +
-                "padrão e centralizado, modo Original (nos PDFs), deslizamento na horizontal e modo Dia. " +
+                "padrão e centralizado, modo Original (nos PDFs), deslizamento na horizontal, rotação 0° e modo Dia. " +
                 "Arquivos novos sempre começam com tudo em \"Não\"."
             textSize = 12f
             alpha = 0.7f
@@ -1566,7 +1603,7 @@ class MainActivity : AppCompatActivity() {
 
     /** No modo original, a largura da lista vira largura da tela x zoom (rolagem lateral). */
     private fun applyWidth() {
-        listWidth = (resources.displayMetrics.widthPixels * (if (reflowMode) 1f else zoom)).toInt()
+        listWidth = (resources.displayMetrics.widthPixels * (if (reflowMode) 1f else maxOf(zoom, 1f))).toInt()
         list.layoutParams = FrameLayout.LayoutParams(listWidth, ViewGroup.LayoutParams.MATCH_PARENT)
     }
 
@@ -2091,6 +2128,9 @@ class MainActivity : AppCompatActivity() {
         keepMode = dp0.getBoolean(dk("remM"), false)
         keepLayout = dp0.getBoolean(dk("remL"), false)
         keepNight = dp0.getBoolean(dk("remN"), false)
+        keepRot = dp0.getBoolean(dk("remR"), false)
+        rotation = if (keepRot) dp0.getInt(dk("rot"), 0).coerceIn(0, 3) else 0
+        applyRotation()
         pendingPage = if (rememberPage) dp0.getInt(currentKey, -1) else -1
         if (pagesUri != uri) {
             pages.clear()
@@ -2104,7 +2144,7 @@ class MainActivity : AppCompatActivity() {
         val savedReflow = keepMode && dp0.getBoolean(dk("reflow"), false)
         val newReflow = docIsEpub || docIsDocx || savedReflow
         val newLayout = if (keepLayout) dp0.getInt(dk("layout"), 1).coerceIn(0, 1) else 1
-        val newZoom = if (keepZoom) dp0.getFloat(dk("zoom"), 1f).coerceIn(1f, ZOOM_MAX) else 1f
+        val newZoom = if (keepZoom) dp0.getFloat(dk("zoom"), 1f).coerceIn(ZOOM_MIN, ZOOM_MAX) else 1f
         val newText = if (keepZoom) dp0.getFloat(dk("textSp"), TEXT_DEFAULT).coerceIn(TEXT_MIN, TEXT_MAX) else TEXT_DEFAULT
         val newNight = keepNight && dp0.getBoolean(dk("night"), false)
         val changed = newReflow != reflowMode || newLayout != pageLayout ||
@@ -3421,9 +3461,11 @@ class MainActivity : AppCompatActivity() {
                 h.img.layoutParams =
                     FrameLayout.LayoutParams(displayW, displayH, Gravity.CENTER_HORIZONTAL or vGrav)
             } else {
-                displayW = listWidth.coerceAtLeast(1)
+                displayW = (if (zoom < 1f) (listWidth * zoom).toInt() else listWidth).coerceAtLeast(1)
                 displayH = (displayW.toLong() * sz[1] / sz[0]).toInt().coerceAtLeast(1)
-                val lp = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, displayH)
+                val lp = if (zoom < 1f) RecyclerView.LayoutParams(displayW, displayH).also {
+                    it.leftMargin = (listWidth - displayW) / 2
+                } else RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, displayH)
                 lp.bottomMargin = dp(6)
                 h.img.layoutParams = lp
             }
