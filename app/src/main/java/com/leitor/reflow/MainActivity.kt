@@ -1465,9 +1465,9 @@ class MainActivity : AppCompatActivity() {
             if (c) saveDocSettings()
         })
         box.addView(TextView(this).apply {
-            text = "Vale só para este arquivo. Com \"Sim\", ao abrir este arquivo de novo ele volta como você " +
-                "deixou. Com \"Não\", ele começa no padrão: primeira página, zoom x1 (e texto no " +
-                "tamanho padrão) e sem centralização, modo Original (nos PDFs), deslizamento na horizontal e modo Dia. " +
+            text = "Lembrar neste arquivo: Com \"Sim\", ao abrir este arquivo de novo ele volta como você " +
+                "deixou. Com \"Não\", ele começa no padrão: primeira página, zoom x1, texto no tamanho " +
+                "padrão e centralizado, modo Original (nos PDFs), deslizamento na horizontal e modo Dia. " +
                 "Arquivos novos sempre começam com tudo em \"Não\"."
             textSize = 12f
             alpha = 0.7f
