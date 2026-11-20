@@ -357,7 +357,8 @@ class MainActivity : AppCompatActivity() {
 
     private class PageText(
         val text: String, val spans: List<Reflow.Span>, val loaded: Boolean = true,
-        val image: String? = null // EPUB: figura desta página (nome da parte dentro do zip)
+        val image: String? = null, // EPUB/DOCX: figura desta página (nome da parte dentro do zip)
+        val fmts: List<EpubBook.Fmt> = emptyList() // DOCX: formatação do texto
     )
     private class ReflowData(val targets: List<LinkTarget>, val pages: List<PageText>)
 
@@ -369,6 +370,8 @@ class MainActivity : AppCompatActivity() {
     private var pagesUri: Uri? = null
     private var pagesComplete = false
     private var docIsEpub = false // arquivo aberto é EPUB (só Refluxo, sem modo Original)
+    private var docIsDocx = false // arquivo aberto é DOCX
+    private var docxOriginal = true // DOCX: true = com a formatação ("Original"), false = texto simples ("Refluxo")
     private var epubFile: File? = null // cópia do EPUB aberto (acesso direto às figuras)
     @Volatile private var epubZip: java.util.zip.ZipFile? = null
     private val imgExec = Executors.newFixedThreadPool(2)
@@ -1005,7 +1008,13 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        row1.addView(makeBtn("Abrir") { picker.launch(arrayOf("application/pdf", "application/epub+zip", "application/octet-stream")) })
+        row1.addView(makeBtn("Abrir") { picker.launch(
+                arrayOf(
+                    "application/pdf", "application/epub+zip",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "application/octet-stream"
+                )
+            ) })
         modeBtn = makeBtn("") { toggleMode() }
         row1.addView(modeBtn)
         row1.addView(makeBtn("A−") { changeSize(-1) })
@@ -1034,7 +1043,7 @@ class MainActivity : AppCompatActivity() {
         bar.addView(row2, row2Lp)
 
         status = TextView(this).apply {
-            text = "Toque em Abrir e escolha um PDF ou EPUB."
+            text = "Toque em Abrir e escolha um PDF, EPUB ou DOCX."
             textSize = 13f
             setPadding(dp(10), dp(6), dp(10), dp(2))
         }
@@ -1254,7 +1263,9 @@ class MainActivity : AppCompatActivity() {
         }
 
     private fun updateLabels() {
-        modeBtn.text = if (docIsEpub) "EPUB: só Refluxo" else if (reflowMode) "PDF: Refluxo" else "PDF: Original"
+        modeBtn.text = if (docIsEpub) "EPUB: só Refluxo"
+        else if (docIsDocx) (if (docxOriginal) "DOCX: Original" else "DOCX: Refluxo")
+        else if (reflowMode) "PDF: Refluxo" else "PDF: Original"
         themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
         layoutBtn.text = if (isBook) "Páginas: Horizontal" else "Páginas: Vertical"
     }
@@ -1334,7 +1345,7 @@ class MainActivity : AppCompatActivity() {
             e.putFloat(dk("zoom"), zoom)
             e.putFloat(dk("textSp"), textSp)
         }
-        if (keepMode) e.putBoolean(dk("reflow"), reflowMode)
+        if (keepMode) e.putBoolean(dk("reflow"), if (docIsDocx) !docxOriginal else reflowMode)
         if (keepLayout) e.putInt(dk("layout"), pageLayout)
         if (keepNight) e.putBoolean(dk("night"), night)
         e.apply()
@@ -1481,6 +1492,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toggleMode() {
+        if (docIsDocx) {
+            // DOCX: "Original" mostra a formatação; "Refluxo" mostra só o texto corrido
+            docxOriginal = !docxOriginal
+            saveDocSettings()
+            updateLabels()
+            reflowAdapter.notifyDataSetChanged()
+            return
+        }
         if (docIsEpub) {
             Toast.makeText(this, "EPUB só tem o modo Refluxo.", Toast.LENGTH_SHORT).show()
             return
@@ -1956,7 +1975,9 @@ class MainActivity : AppCompatActivity() {
         val mime = try { contentResolver.getType(uri) } catch (_: Exception) { null }
         docIsEpub = mime == "application/epub+zip" ||
             (name ?: uri.lastPathSegment ?: "").lowercase().endsWith(".epub")
-        currentName = (name ?: uri.lastPathSegment ?: "").replace(Regex("(?i)\\.(pdf|epub)$"), "")
+        docIsDocx = mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+            (name ?: uri.lastPathSegment ?: "").lowercase().endsWith(".docx")
+        currentName = (name ?: uri.lastPathSegment ?: "").replace(Regex("(?i)\\.(pdf|epub|docx)$"), "")
         // o nome do PDF aparece na lista de apps recentes, para distinguir as janelas
         try { setTaskDescription(android.app.ActivityManager.TaskDescription(currentName)) } catch (_: Throwable) {}
         return "pg_" + (name ?: uri.toString()) + "|" + size
@@ -2073,7 +2094,9 @@ class MainActivity : AppCompatActivity() {
         hScroll.scrollTo(0, 0)
         origScrollX = if (keepZoom) dp0.getInt(dk("scrollX"), 0).coerceAtLeast(0) else 0
         // aplica os ajustes lembrados deste PDF (ou o padrão)
-        val newReflow = docIsEpub || (keepMode && dp0.getBoolean(dk("reflow"), false))
+        val savedReflow = keepMode && dp0.getBoolean(dk("reflow"), false)
+        docxOriginal = !(docIsDocx && savedReflow)
+        val newReflow = docIsEpub || docIsDocx || savedReflow
         val newLayout = if (keepLayout) dp0.getInt(dk("layout"), 1).coerceIn(0, 1) else 1
         val newZoom = if (keepZoom) dp0.getFloat(dk("zoom"), 1f).coerceIn(1f, ZOOM_MAX) else 1f
         val newText = if (keepZoom) dp0.getFloat(dk("textSp"), TEXT_DEFAULT).coerceIn(TEXT_MIN, TEXT_MAX) else TEXT_DEFAULT
@@ -2090,6 +2113,7 @@ class MainActivity : AppCompatActivity() {
             applyTheme()
             updateLabels()
         }
+        updateLabels()
         show()
         if (!reflowMode && origScrollX > 0) {
             // volta à centralização lembrada deste PDF
@@ -2104,7 +2128,7 @@ class MainActivity : AppCompatActivity() {
         val token = ++loadToken
         clearSelection()
         closeRenderer()
-        if (docIsEpub) showEpub(uri, token)
+        if (docIsEpub || docIsDocx) showEpub(uri, token)
         else if (reflowMode) showReflow(uri, token) else showOriginal(uri, token)
     }
 
@@ -2241,7 +2265,7 @@ class MainActivity : AppCompatActivity() {
     private fun showEpub(uri: Uri, token: Int) {
         if (pagesUri == uri && pagesComplete) {
             reflowAdapter.notifyDataSetChanged()
-            status.text = "${pages.size} páginas · EPUB"
+            status.text = "${pages.size} páginas · ${if (docIsDocx) "DOCX" else "EPUB"}"
             restorePending()
             pendingPage = -1
             updatePageIndicator()
@@ -2255,7 +2279,7 @@ class MainActivity : AppCompatActivity() {
         pagesUri = uri
         pagesComplete = false
         reflowAdapter.notifyDataSetChanged()
-        status.text = "Abrindo EPUB…"
+        status.text = "Abrindo…"
         Thread {
             try {
                 // copia o EPUB para um arquivo: o zip precisa de acesso direto para ler as figuras
@@ -2266,15 +2290,15 @@ class MainActivity : AppCompatActivity() {
                 contentResolver.openInputStream(uri)?.use { ins -> f.outputStream().use { ins.copyTo(it) } }
                     ?: throw IllegalStateException("Não foi possível ler o arquivo")
                 epubFile = f
-                val book = EpubBook.load(f)
+                val book = if (docIsDocx) DocxBook.load(f) else EpubBook.load(f)
                 epubZip = java.util.zip.ZipFile(f)
                 main.post {
                     if (token != loadToken) return@post
                     epubBmp.evictAll()
                     reflowTargets.addAll(book.targets)
-                    for (p in book.pages) pages.add(PageText(p.text, p.spans, true, p.image))
+                    for (p in book.pages) pages.add(PageText(p.text, p.spans, true, p.image, p.fmts))
                     reflowAdapter.notifyDataSetChanged()
-                    status.text = "${pages.size} páginas · EPUB"
+                    status.text = "${pages.size} páginas · ${if (docIsDocx) "DOCX" else "EPUB"}"
                     pagesComplete = true
                     restorePending()
                     pendingPage = -1
@@ -2283,8 +2307,8 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Throwable) {
                 main.post {
                     if (token != loadToken) return@post
-                    status.text = "Não foi possível abrir o EPUB."
-                    Toast.makeText(this@MainActivity, "Não foi possível abrir o EPUB: ${e.message ?: "erro"}", Toast.LENGTH_LONG).show()
+                    status.text = "Não foi possível abrir o arquivo."
+                    Toast.makeText(this@MainActivity, "Não foi possível abrir o arquivo: ${e.message ?: "erro"}", Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
@@ -2629,7 +2653,7 @@ class MainActivity : AppCompatActivity() {
         val my = ++searchToken
         // EPUB: o texto já está na memória (só as páginas já carregadas, que no EPUB são todas)
         val epubTexts: List<String>? =
-            if (docIsEpub) pages.map { it.text.replace(wsRegex, " ").trim() } else null
+            if (docIsEpub || docIsDocx) pages.map { it.text.replace(wsRegex, " ").trim() } else null
         val snapshot = ArrayList(pageTexts)
         val snapshotF = ArrayList(pageFolded)
         val dlg = AlertDialog.Builder(this)
@@ -2743,7 +2767,7 @@ class MainActivity : AppCompatActivity() {
         if (hits.isEmpty()) {
             AlertDialog.Builder(this)
                 .setTitle("Buscar")
-                .setMessage("Nenhum resultado para “$query”." + if (docIsEpub) "" else "\n\nPDFs só de imagem não têm texto para buscar.")
+                .setMessage("Nenhum resultado para “$query”." + if (docIsEpub || docIsDocx) "" else "\n\nPDFs só de imagem não têm texto para buscar.")
                 .setPositiveButton("OK", null)
                 .show()
             return
@@ -3242,10 +3266,25 @@ class MainActivity : AppCompatActivity() {
             h.body.setTextColor(fg)
             h.body.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp)
             val hl = if (position == hlPage) hlRange(content) else null
-            if (pt.spans.isEmpty() && hl == null) {
+            val styled = docIsDocx && docxOriginal && pt.loaded && pt.fmts.isNotEmpty()
+            if (pt.spans.isEmpty() && hl == null && !styled) {
                 h.body.text = content
             } else {
                 val ss = SpannableString(content)
+                if (styled) {
+                    for (f in pt.fmts) {
+                        if (f.start < 0 || f.end <= f.start || f.end > content.length) continue
+                        val what: Any = when (f.kind) {
+                            0 -> android.text.style.StyleSpan(android.graphics.Typeface.BOLD)
+                            1 -> android.text.style.StyleSpan(android.graphics.Typeface.ITALIC)
+                            2 -> android.text.style.UnderlineSpan()
+                            3 -> android.text.style.RelativeSizeSpan(f.value)
+                            4 -> android.text.style.AlignmentSpan.Standard(android.text.Layout.Alignment.ALIGN_CENTER)
+                            else -> android.text.style.AlignmentSpan.Standard(android.text.Layout.Alignment.ALIGN_OPPOSITE)
+                        }
+                        ss.setSpan(what, f.start, f.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    }
+                }
                 for (s in pt.spans) {
                     if (s.start >= 0 && s.end > s.start && s.end <= content.length) {
                         ss.setSpan(LinkSpan(s.id), s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)

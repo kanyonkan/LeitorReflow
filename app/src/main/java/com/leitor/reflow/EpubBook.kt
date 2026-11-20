@@ -16,14 +16,23 @@ import java.util.zip.ZipFile
  */
 object EpubBook {
 
-    class Page(val text: String, val spans: List<Reflow.Span>, val image: String? = null)
+    /** Formatação de um trecho (DOCX): 0 negrito, 1 itálico, 2 sublinhado, 3 tamanho (value = escala), 4 centro, 5 direita. */
+    class Fmt(val start: Int, val end: Int, val kind: Int, val value: Float = 0f)
+
+    class Page(
+        val text: String, val spans: List<Reflow.Span>, val image: String? = null,
+        val fmts: List<Fmt> = emptyList()
+    )
     class Result(val pages: List<Page>, val targets: List<LinkTarget>)
 
-    private const val PAGE_CHARS = 1700 // tamanho aproximado de cada "página"
+    internal const val PAGE_CHARS = 1700 // tamanho aproximado de cada "página"
     private const val MAX_ENTRY = 12 * 1024 * 1024
 
-    private class Para(val text: String, val spans: List<Reflow.Span>, val chapterStart: Boolean, val image: String? = null)
-    private class LinkRef(val path: String, val frag: String, val external: String?)
+    internal class Para(
+        val text: String, val spans: List<Reflow.Span>, val chapterStart: Boolean, val image: String? = null,
+        val fmts: List<Fmt> = emptyList()
+    )
+    internal class LinkRef(val path: String, val frag: String, val external: String?)
 
     /** Lê o EPUB já copiado para um arquivo (acesso direto às partes do zip). */
     fun load(file: File): Result {
@@ -101,15 +110,24 @@ object EpubBook {
             parseChapter(str(bytes), path, paras, links, anchors, ::imageEntry)
         }
 
+        return finish(paras, links, anchors, fileStart)
+    }
+
+    /** Agrupa os parágrafos em páginas e resolve o destino dos links (usado por EPUB e DOCX). */
+    internal fun finish(
+        paras: List<Para>, links: List<LinkRef>, anchors: Map<String, Int>, fileStart: Map<String, Int>
+    ): Result {
         // 5) agrupa em páginas
         val paraPage = IntArray(paras.size)
         val pages = ArrayList<Page>()
         val sb = StringBuilder()
         var spans = ArrayList<Reflow.Span>()
+        var fm = ArrayList<Fmt>()
         fun flush() {
-            if (sb.isNotEmpty()) pages.add(Page(sb.toString(), spans))
+            if (sb.isNotEmpty()) pages.add(Page(sb.toString(), spans, null, fm))
             sb.setLength(0)
             spans = ArrayList()
+            fm = ArrayList()
         }
         for ((i, p) in paras.withIndex()) {
             if (p.image != null) {
@@ -124,10 +142,11 @@ object EpubBook {
             val off = sb.length
             sb.append(p.text)
             for (s in p.spans) spans.add(Reflow.Span(s.start + off, s.end + off, s.id))
+            for (f in p.fmts) fm.add(Fmt(f.start + off, f.end + off, f.kind, f.value))
             paraPage[i] = pages.size
         }
         flush()
-        if (pages.isEmpty()) throw IllegalArgumentException("EPUB sem texto")
+        if (pages.isEmpty()) throw IllegalArgumentException("Arquivo sem texto")
 
         // 6) destinos dos links
         fun pageOfPara(i: Int): Int = if (i in paraPage.indices) paraPage[i].coerceAtMost(pages.size - 1) else -1
@@ -255,20 +274,20 @@ object EpubBook {
 
     // ------------------------------------------------------------------ utilidades
 
-    private fun str(b: ByteArray): String {
+    internal fun str(b: ByteArray): String {
         var s = String(b, Charsets.UTF_8)
         if (s.startsWith("﻿")) s = s.substring(1)
         return s
     }
 
-    private fun decode(s: String): String = try {
+    internal fun decode(s: String): String = try {
         java.net.URLDecoder.decode(s.replace("+", "%2B"), "UTF-8")
     } catch (_: Exception) {
         s
     }
 
     /** Junta uma pasta e um caminho relativo, resolvendo "." e "..". */
-    private fun normalize(dir: String, rel: String): String {
+    internal fun normalize(dir: String, rel: String): String {
         val parts = ArrayList<String>()
         val all = (if (rel.startsWith("/")) "" else dir) + "/" + rel
         for (seg in all.split('/')) {
