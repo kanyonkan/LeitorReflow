@@ -1311,15 +1311,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyRotation() {
+        // o Android costuma recusar o retrato de cabeça para baixo: no 180° o próprio app gira o conteúdo
+        root.rotation = if (rotation == 2) 180f else 0f
         requestedOrientation = when (rotation) {
             1 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            2 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT // 180°: o conteúdo é girado pelo app
             3 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
             else -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
     private fun rotateScreen() {
-        rotation = when (rotation) { 0 -> 1; 1 -> 3; else -> 0 } // o retrato de cabeça para baixo (180°) o Android costuma recusar
+        rotation = (rotation + 1) % 4
         applyRotation()
         saveDocSettings()
     }
