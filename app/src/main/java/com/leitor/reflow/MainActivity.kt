@@ -427,6 +427,9 @@ class MainActivity : AppCompatActivity() {
     private var comicNames: List<String> = emptyList() // imagem de cada página do CBZ/CBR
     private lateinit var searchBtnRef: Button
     private lateinit var swipeBtn: Button
+    private lateinit var rowTwo: LinearLayout
+    private val sizeBtns = ArrayList<Button>()
+    private var openBtnMinH = 0
     private var swipeLock = false // só quadrinhos: o deslizamento do dedo não troca de página
     private val docxOriginal = true // DOCX: o texto sempre aparece com a formatação do documento
     private var epubFile: File? = null // cópia do EPUB aberto (acesso direto às figuras)
@@ -1078,10 +1081,15 @@ class MainActivity : AppCompatActivity() {
                 )
             ) }
         row1.addView(openBtn)
+        openBtnMinH = openBtn.minHeight
         modeBtn = makeBtn("") { toggleMode() }
         row1.addView(modeBtn)
-        row1.addView(makeBtn("A−") { changeSize(-1) })
-        row1.addView(makeBtn("A+") { changeSize(+1) })
+        val btnMinus = makeBtn("A−") { changeSize(-1) }
+        val btnPlus = makeBtn("A+") { changeSize(+1) }
+        sizeBtns.add(btnMinus)
+        sizeBtns.add(btnPlus)
+        row1.addView(btnMinus)
+        row1.addView(btnPlus)
         themeBtn = makeBtn("") { toggleTheme() }
         row1.addView(themeBtn)
         val searchBtn = makeBtn("🔍") { showSearchDialog() }
@@ -1119,6 +1127,7 @@ class MainActivity : AppCompatActivity() {
         )
         row2Lp.topMargin = dp(2)
         bar.addView(row2, row2Lp)
+        rowTwo = row2
 
         status = TextView(this).apply {
             text = "Toque em Abrir e escolha um PDF, DOC, DOCX, EPUB, CBZ ou CBR."
@@ -1352,17 +1361,25 @@ class MainActivity : AppCompatActivity() {
         else if (docIsDoc) "DOC: só Refluxo"
         else if (docIsDocx) "DOCX: só Refluxo"
         else if (reflowMode) "PDF Modo Original" else "PDF Modo Refluxo"
-        // sem documento aberto: só o botão Abrir, maior; com documento: Abrir reduzido + botão de modo
+        // sem documento aberto: só o botão Abrir, ocupando a linha toda; com documento: Abrir reduzido + demais botões
         val noDoc = currentUri == null
-        modeBtn.visibility = if (noDoc || docIsComic) View.GONE else View.VISIBLE
-        searchBtnRef.visibility = if (docIsComic) View.GONE else View.VISIBLE
+        val isPdf = !docIsComic && !docIsEpub && !docIsDocx && !docIsDoc
+        modeBtn.visibility = if (!noDoc && isPdf) View.VISIBLE else View.GONE // os demais tipos só têm Refluxo
+        themeBtn.visibility = if (noDoc) View.GONE else View.VISIBLE
+        for (b in sizeBtns) b.visibility = if (noDoc) View.GONE else View.VISIBLE
+        searchBtnRef.visibility = if (noDoc || docIsComic) View.GONE else View.VISIBLE
         swipeBtn.visibility = if (docIsComic && !noDoc) View.VISIBLE else View.GONE
         swipeBtn.text = if (swipeLock) "Soltar troca por deslizamento" else "Barrar troca por deslizamento"
-        openBtn.text = if (noDoc) "Abrir: PDF, EPUB, DOC, DOCX, CBZ, CBR" else "Abrir"
-        (openBtn.layoutParams as LinearLayout.LayoutParams).weight = if (noDoc) 2f else 1f
+        rowTwo.visibility = if (noDoc) View.GONE else View.VISIBLE
+        openBtn.text = if (noDoc) "Abrir: PDF, EPUB, DOCX, DOC, CBZ, CBR" else "Abrir"
+        openBtn.maxLines = 1
+        openBtn.minHeight = if (noDoc) dp(36) else openBtnMinH
+        openBtn.minimumHeight = if (noDoc) dp(36) else openBtnMinH
+        openBtn.textSize = if (noDoc) 12f else 13f
+        (openBtn.layoutParams as LinearLayout.LayoutParams).weight = 1f
         openBtn.requestLayout()
         themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
-        layoutBtn.text = if (isBook) "Páginas: Horizontal" else "Páginas: Vertical"
+        layoutBtn.text = if (isBook) "Páginas: Vertical" else "Páginas: Horizontal" // mostra para onde o toque leva
     }
 
     private fun toggleBar() {
