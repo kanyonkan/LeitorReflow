@@ -171,6 +171,14 @@ class PagerLayoutManager(context: Context, orientation: Int) :
         }
     }
 
+    /** Quanto falta para a borda da página âncora no sentido do deslize (positivo = para baixo). */
+    fun edgeDelta(fingerUp: Boolean): Int {
+        val v = findViewByPosition(anchor) ?: return 0
+        val lo = paddingTop
+        val hi = height - paddingBottom
+        return if (fingerUp) maxOf(0, getDecoratedBottom(v) - hi) else -maxOf(0, lo - getDecoratedTop(v))
+    }
+
     /** Limita o arrasto do dedo ao que ainda cabe dentro da página âncora. */
     private fun clampDrag(d: Int, vert: Boolean): Int {
         val v = findViewByPosition(anchor) ?: return 0
@@ -1652,7 +1660,17 @@ class MainActivity : AppCompatActivity() {
         list.onFlingListener = object : RecyclerView.OnFlingListener() {
             override fun onFling(velocityX: Int, velocityY: Int): Boolean {
                 if (scaling || pinchedRecently || selDragging) return true
-                if (swipeLock && docIsComic) return true // sem inércia: o deslize não troca de página
+                if (swipeLock && docIsComic) {
+                    // trava ligada: o deslize rápido leva a página até a borda, sem passar para outra
+                    if (!isBook) {
+                        val dy = (list.layoutManager as? PagerLayoutManager)?.edgeDelta(velocityY < 0) ?: 0
+                        if (dy != 0) {
+                            val ms = (250f + abs(dy) * 0.25f).coerceAtMost(900f).toInt()
+                            list.smoothScrollBy(0, dy, android.view.animation.DecelerateInterpolator(2f), ms)
+                        }
+                    }
+                    return true
+                }
                 val v = if (isBook) velocityX else velocityY
                 if (isBook && !reflowMode && zoom > 1f) return true
                 val dist = (v * VERTICAL_FLING_SECONDS).toInt()
