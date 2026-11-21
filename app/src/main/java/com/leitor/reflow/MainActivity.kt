@@ -428,6 +428,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var searchBtnRef: Button
     private lateinit var swipeBtn: Button
     private lateinit var rowTwo: LinearLayout
+    private lateinit var centerBtnRef: Button
     private val sizeBtns = ArrayList<Button>()
     private var openBtnMinH = 0
     private var swipeLock = false // só quadrinhos: o deslizamento do dedo não troca de página
@@ -1113,6 +1114,7 @@ class MainActivity : AppCompatActivity() {
         }
         layoutBtn = makeBtn("") { cyclePageLayout() }
         val centerBtn = makeBtn("Centralizar") { centerPage() }
+        centerBtnRef = centerBtn
         settingsBtn = makeBtn("Configurar") { showSettings() }
         val rotBtn = makeBtn("\u21BB") { rotateScreen() }
         rotBtn.textSize = 18f
@@ -1371,6 +1373,7 @@ class MainActivity : AppCompatActivity() {
         swipeBtn.visibility = if (docIsComic && !noDoc) View.VISIBLE else View.GONE
         swipeBtn.text = if (swipeLock) "Soltar troca por deslizamento" else "Barrar troca por deslizamento"
         rowTwo.visibility = if (noDoc) View.GONE else View.VISIBLE
+        centerBtnRef.visibility = if (reflowMode) View.GONE else View.VISIBLE // só PDF Original, CBZ e CBR
         openBtn.text = if (noDoc) "Toque aqui para Abrir: PDF, EPUB, DOCX, DOC, CBZ, CBR" else "Abrir"
         openBtn.maxLines = if (noDoc) 2 else 1
         openBtn.minHeight = if (noDoc) dp(72) else openBtnMinH
