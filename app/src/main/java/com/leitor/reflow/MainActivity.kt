@@ -141,22 +141,6 @@ class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
     }
 }
 
-/** REGISTRO DE TESTE TEMPORÁRIO (versão de teste): anota rolagem, inércia, quadros lentos e leitura de imagens dos quadrinhos. */
-object Dbg {
-    private val sb = StringBuilder()
-    private val fmt = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
-    @Volatile var on = false
-
-    @Synchronized fun log(m: String) {
-        if (!on) return
-        sb.append(fmt.format(java.util.Date())).append(' ').append(m).append('\n')
-        if (sb.length > 120000) sb.delete(0, sb.length - 90000)
-    }
-
-    @Synchronized fun text(): String = sb.toString()
-    @Synchronized fun clear() = sb.setLength(0)
-}
-
 /** LinearLayoutManager que permite travar a rolagem lateral feita com o dedo. */
 class PagerLayoutManager(context: Context, orientation: Int) :
     LinearLayoutManager(context, orientation, false) {
@@ -776,7 +760,6 @@ class MainActivity : AppCompatActivity() {
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
             cancelComicFling()
-            if (Dbg.on) Dbg.log("toque DOWN x=${ev.x.toInt()} y=${ev.y.toInt()}")
             pinchedRecently = false
             canPanRightAtDown = hScroll.canScrollHorizontally(1)
             canPanLeftAtDown = hScroll.canScrollHorizontally(-1)
@@ -1057,19 +1040,9 @@ class MainActivity : AppCompatActivity() {
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
                 updatePageIndicator()
-                if (Dbg.on && (dx != 0 || dy != 0)) {
-                    scrollSumDy += dy
-                    scrollSumDx += dx
-                    scrollEvents++
-                }
             }
 
             override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
-                if (Dbg.on) {
-                    Dbg.log("estadoRolagem=$newState  (acumulado desde o último estado: dy=$scrollSumDy dx=$scrollSumDx eventos=$scrollEvents)")
-                    scrollSumDy = 0; scrollSumDx = 0; scrollEvents = 0
-                    if (newState != RecyclerView.SCROLL_STATE_IDLE) startFrameWatch()
-                }
                 if (newState == RecyclerView.SCROLL_STATE_IDLE) {
                     updatePageIndicator()
                     // terminou uma corrida por deslize rápido: encaixa na página mais próxima
@@ -1146,30 +1119,6 @@ class MainActivity : AppCompatActivity() {
         )
         row2Lp.topMargin = dp(2)
         bar.addView(row2, row2Lp)
-
-        // --- VERSÃO DE TESTE: registro de rolagem (toque = copiar, segurar = limpar) ---
-        val dbgBtn = makeBtn("Registro (teste): toque = copiar, segurar = limpar") {
-            dbgConfig("copiar")
-            val head = "LeitorReflow registro de teste | ${android.os.Build.MODEL} | Android ${android.os.Build.VERSION.RELEASE}\n"
-            val txt = head + Dbg.text()
-            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                .setPrimaryClip(ClipData.newPlainText("registro", txt))
-            Toast.makeText(this, "Registro copiado (${txt.count { it == '\n' }} linhas). Cole no chat.", Toast.LENGTH_LONG).show()
-        }
-        dbgBtn.setOnLongClickListener {
-            Dbg.clear()
-            dbgConfig("limpo")
-            Toast.makeText(this, "Registro limpo.", Toast.LENGTH_SHORT).show()
-            true
-        }
-        Dbg.on = true
-        val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row3.addView(dbgBtn)
-        val row3Lp = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-        row3Lp.topMargin = dp(2)
-        bar.addView(row3, row3Lp)
 
         status = TextView(this).apply {
             text = "Toque em Abrir e escolha um PDF, DOC, DOCX, EPUB, CBZ ou CBR."
@@ -1692,42 +1641,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Monta a lista conforme o modo (refluxo/original) e o formato (vertical/horizontal). */
-    private var scrollSumDy = 0
-    private var scrollSumDx = 0
-    private var scrollEvents = 0
-    private var frameWatching = false
-    private var lastFrameNs = 0L
-
-    /** Anota quadros demorados (mais de 24 ms) enquanto a lista se move. */
-    private fun startFrameWatch() {
-        if (frameWatching) return
-        frameWatching = true
-        lastFrameNs = 0L
-        val cb = object : android.view.Choreographer.FrameCallback {
-            override fun doFrame(ns: Long) {
-                if (lastFrameNs != 0L) {
-                    val ms = (ns - lastFrameNs) / 1_000_000
-                    if (ms > 24) Dbg.log("QUADRO LENTO ${ms} ms")
-                }
-                lastFrameNs = ns
-                if (list.scrollState != RecyclerView.SCROLL_STATE_IDLE || comicFlingRun != null) {
-                    android.view.Choreographer.getInstance().postFrameCallback(this)
-                } else {
-                    frameWatching = false
-                }
-            }
-        }
-        android.view.Choreographer.getInstance().postFrameCallback(cb)
-    }
-
-    private fun dbgConfig(why: String) {
-        if (!Dbg.on) return
-        val dm = resources.displayMetrics
-        Dbg.log("CONFIG($why) tela=${dm.widthPixels}x${dm.heightPixels} densidade=${dm.density} zoom=$zoom isBook=$isBook listWidth=$listWidth " +
-            "comic=$docIsComic trava=$swipeLock paginas=${sizes.size} cacheBmp=${bmpCache.size() / 1024}KB/${bmpCache.maxSize() / 1024}KB " +
-            "memMax=${Runtime.getRuntime().maxMemory() / 1048576}MB memUsada=${(Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / 1048576}MB")
-    }
-
     private var comicFlingRun: Runnable? = null
 
     private fun cancelComicFling() {
@@ -1746,18 +1659,13 @@ class MainActivity : AppCompatActivity() {
         list.stopScroll()
         val sc = android.widget.OverScroller(this)
         sc.fling(0, 0, 0, vy, 0, 0, Int.MIN_VALUE / 2, Int.MAX_VALUE / 2)
-        Dbg.log("comicFling vy=$vy distanciaFinal=${sc.finalY}")
-        val t0 = android.os.SystemClock.uptimeMillis()
-        var frames = 0
         var last = 0
         val run = object : Runnable {
             override fun run() {
                 if (!sc.computeScrollOffset()) {
                     comicFlingRun = null
-                    Dbg.log("comicFling FIM quadros=$frames tempo=${android.os.SystemClock.uptimeMillis() - t0}ms percorrido=$last")
                     return
                 }
-                frames++
                 var y = sc.currY
                 val capped = abs(y) >= limit
                 if (capped) y = if (y < 0) -limit else limit
@@ -1768,13 +1676,11 @@ class MainActivity : AppCompatActivity() {
                     list.scrollBy(0, d)
                     if (list.computeVerticalScrollOffset() == before) {
                         comicFlingRun = null
-                        Dbg.log("comicFling parou: lista não andou (fim?) quadros=$frames percorrido=$last")
                         return
                     }
                 }
                 if (capped) {
                     comicFlingRun = null
-                    Dbg.log("comicFling parou na borda quadros=$frames tempo=${android.os.SystemClock.uptimeMillis() - t0}ms percorrido=$last")
                     return
                 }
                 list.postOnAnimation(this)
@@ -1804,10 +1710,6 @@ class MainActivity : AppCompatActivity() {
         list.onFlingListener = object : RecyclerView.OnFlingListener() {
             override fun onFling(velocityX: Int, velocityY: Int): Boolean {
                 if (scaling || pinchedRecently || selDragging) return true
-                if (Dbg.on) {
-                    dbgConfig("fling")
-                    Dbg.log("FLING vx=$velocityX vy=$velocityY isBook=$isBook zoom=$zoom trava=$swipeLock")
-                }
                 if (swipeLock && docIsComic) {
                     // trava ligada: o deslize rápido leva a página até a borda, sem passar para outra
                     if (!isBook) {
@@ -2895,7 +2797,6 @@ class MainActivity : AppCompatActivity() {
                     updatePageIndicator()
                 }
             } catch (e: Throwable) {
-                Dbg.log("ERRO ao abrir quadrinhos: ${e.javaClass.name}: ${e.message}\n${e.stackTrace.take(6).joinToString("\n")}")
                 main.post {
                     if (token != loadToken) return@post
                     status.text = "Não foi possível abrir o arquivo."
@@ -3916,20 +3817,14 @@ class MainActivity : AppCompatActivity() {
             val key = "$position|$renderW"
             val hit = bmpCache.get(key)
             if (hit != null) {
-                if (Dbg.on) Dbg.log("bind pág ${position + 1}: cache renderW=$renderW displayW=$displayW")
                 h.img.setImageBitmap(hit)
                 return
             }
             val zip = epubZip ?: return
             val name = comicNames.getOrNull(position) ?: return
             val srcW = sz[0]
-            val tBind = android.os.SystemClock.uptimeMillis()
             renderExec.execute {
-                if (h.boundPos != position) {
-                    if (Dbg.on) Dbg.log("bind pág ${position + 1}: descartada antes de ler")
-                    return@execute
-                }
-                val tDec = android.os.SystemClock.uptimeMillis()
+                if (h.boundPos != position) return@execute
                 val bmp = try {
                     val e = zip.getEntry(name) ?: throw IllegalStateException()
                     var sample = 1
@@ -3940,12 +3835,8 @@ class MainActivity : AppCompatActivity() {
                     null
                 }
                 val done = bmp ?: return@execute
-                if (Dbg.on) Dbg.log("bind pág ${position + 1}: lida ${done.width}x${done.height} (original ${sz[0]}x${sz[1]}) renderW=$renderW displayW=$displayW fila=${tDec - tBind}ms leitura=${android.os.SystemClock.uptimeMillis() - tDec}ms")
                 bmpCache.put(key, done)
-                main.post {
-                    if (h.boundPos == position) h.img.setImageBitmap(done)
-                    if (Dbg.on) Dbg.log("bind pág ${position + 1}: na tela após ${android.os.SystemClock.uptimeMillis() - tBind}ms")
-                }
+                main.post { if (h.boundPos == position) h.img.setImageBitmap(done) }
             }
         }
 

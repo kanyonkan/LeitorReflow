@@ -61,7 +61,6 @@ object ComicBook {
         val head = ByteArray(8)
         val got = src.inputStream().use { it.read(head) }
         val hex = head.take(maxOf(got, 0)).joinToString(" ") { "%02X".format(it) }
-        Dbg.log("CBZ/CBR: tamanho=${src.length()} bytes, início=$hex")
         val isZip = head[0] == 0x50.toByte() && head[1] == 0x4B.toByte()
         val isRar = head[0] == 0x52.toByte() && head[1] == 0x61.toByte() && head[2] == 0x72.toByte()
         val is7z = head[0] == 0x37.toByte() && head[1] == 0x7A.toByte() && head[2] == 0xBC.toByte()
@@ -90,7 +89,6 @@ object ComicBook {
                 break
             } catch (e: Throwable) {
                 lastErr = e
-                Dbg.log("CBZ/CBR: leitura com ${c.name()} falhou (${e.javaClass.simpleName}: ${e.message})")
             }
         }
         if (!done) throw IllegalArgumentException("Não foi possível ler a lista de páginas (${lastErr?.message})")
@@ -117,7 +115,6 @@ object ComicBook {
                     !l.substringAfterLast('/').startsWith(".") && !l.startsWith("__macosx/")
                 ) others.add(e.name)
             }
-            Dbg.log("CBZ/CBR: codificação=${cs.name()} entradas=$total imagens=${names.size} outras=${others.size} exemplos=${(names + others).take(3)} metodos=$methods")
             // nenhum arquivo com extensão de imagem: confere se os demais abrem como imagem
             if (names.isEmpty() && others.isNotEmpty()) {
                 for (n in others) {
