@@ -1358,6 +1358,20 @@ class MainActivity : AppCompatActivity() {
                 .apply { setMargins(dp(2), 0, dp(2), 0) }
         }
 
+    /** Tela inicial: o botão Abrir ganha contorno preto (claro no modo Noite, para continuar visível). */
+    private fun styleOpenBtn() {
+        val fill = if (night) Color.parseColor("#2C2C2C") else Color.parseColor("#D8D3C4")
+        if (currentUri == null) {
+            openBtn.background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(fill)
+                setStroke(dp(2), if (night) Color.parseColor("#BBBBBB") else Color.BLACK)
+                cornerRadius = dp(4).toFloat()
+            }
+        } else {
+            openBtn.setBackgroundColor(fill)
+        }
+    }
+
     private fun updateLabels() {
         modeBtn.text = if (docIsEpub) "EPUB: só Refluxo"
         else if (docIsDoc) "DOC: só Refluxo"
@@ -1384,6 +1398,9 @@ class MainActivity : AppCompatActivity() {
             weight = 1f
             topMargin = if (noDoc) dp(24) else 0 // tela inicial: botão um pouco mais abaixo
         }
+        openBtn.gravity = Gravity.CENTER // texto centrado também na vertical
+        openBtn.includeFontPadding = false
+        styleOpenBtn()
         openBtn.requestLayout()
         themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
         layoutBtn.text = if (isBook) "Páginas: Vertical" else "Páginas: Horizontal" // mostra para onde o toque leva
@@ -1790,6 +1807,7 @@ class MainActivity : AppCompatActivity() {
             it.setTextColor(fg)
             it.setBackgroundColor(if (night) Color.parseColor("#2C2C2C") else Color.parseColor("#D8D3C4"))
         }
+        styleOpenBtn()
         if (swipeLock && docIsComic) { // trava acionada: botão em destaque
             swipeBtn.setBackgroundColor(Color.parseColor("#B5541C"))
             swipeBtn.setTextColor(Color.WHITE)
