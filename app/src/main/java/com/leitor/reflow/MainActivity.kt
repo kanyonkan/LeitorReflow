@@ -1743,7 +1743,7 @@ class MainActivity : AppCompatActivity() {
         cancelComicFling()
         val sc = android.widget.OverScroller(this)
         sc.fling(0, 0, 0, vy, 0, 0, Int.MIN_VALUE / 2, Int.MAX_VALUE / 2)
-        Dbg.log("comicFling vy=$vy distanciaFinal=${sc.finalY} duracao=${sc.duration}ms")
+        Dbg.log("comicFling vy=$vy distanciaFinal=${sc.finalY}")
         val t0 = android.os.SystemClock.uptimeMillis()
         var frames = 0
         var last = 0
