@@ -1378,8 +1378,12 @@ class MainActivity : AppCompatActivity() {
         openBtn.maxLines = if (noDoc) 2 else 1
         openBtn.minHeight = if (noDoc) dp(72) else openBtnMinH
         openBtn.minimumHeight = if (noDoc) dp(72) else openBtnMinH
-        openBtn.textSize = if (noDoc) 12f else 13f
-        (openBtn.layoutParams as LinearLayout.LayoutParams).weight = 1f
+        openBtn.textSize = 13f
+        openBtn.setTypeface(null, if (noDoc) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+        (openBtn.layoutParams as LinearLayout.LayoutParams).apply {
+            weight = 1f
+            topMargin = if (noDoc) dp(24) else 0 // tela inicial: botão um pouco mais abaixo
+        }
         openBtn.requestLayout()
         themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
         layoutBtn.text = if (isBook) "Páginas: Vertical" else "Páginas: Horizontal" // mostra para onde o toque leva
