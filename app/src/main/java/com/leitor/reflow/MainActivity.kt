@@ -1663,7 +1663,7 @@ class MainActivity : AppCompatActivity() {
                 if (swipeLock && docIsComic) {
                     // trava ligada: o deslize rápido leva a página até a borda, sem passar para outra
                     if (!isBook) {
-                        val dy = (list.layoutManager as? PagerLayoutManager)?.edgeDelta(velocityY < 0) ?: 0
+                        val dy = (list.layoutManager as? PagerLayoutManager)?.edgeDelta(velocityY > 0) ?: 0
                         if (dy != 0) {
                             val ms = (250f + abs(dy) * 0.25f).coerceAtMost(900f).toInt()
                             list.smoothScrollBy(0, dy, android.view.animation.DecelerateInterpolator(2f), ms)
@@ -1821,10 +1821,67 @@ class MainActivity : AppCompatActivity() {
         }, 80)
     }
 
+    /**
+     * Quadrinhos com zoom, formato vertical: a página que entra pelo toque lateral aparece na mesma
+     * posição relativa (topo, meio, base…) da que saiu.
+     */
+    private fun comicStepVertical(delta: Int, count: Int) {
+        val vpH = list.height - list.paddingTop - list.paddingBottom
+        val first = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
+        val fv = lm().findViewByPosition(first)
+        val cur = (if (fv != null && fv.bottom < list.height * 0.25f) first + 1 else first).coerceIn(0, count - 1)
+        val cv = lm().findViewByPosition(cur)
+        val range = if (cv != null) cv.height - vpH else 0
+        val frac = if (cv != null && range > 0) ((pageTopY() - cv.top).toFloat() / range).coerceIn(0f, 1f) else 0f
+        val t = (cur + delta).coerceIn(0, count - 1)
+        if (t == cur) return
+        val tv = lm().findViewByPosition(t)
+        if (tv == null) {
+            turnTo(t)
+            return
+        }
+        val newRange = tv.height - vpH
+        val newOff = if (newRange > 0) (frac * newRange).toInt() else 0
+        snapAfterFling = false
+        alignTarget = -1
+        list.smoothScrollBy(0, tv.top - pageTopY() + newOff, null, 140)
+        list.postDelayed({
+            if (list.scrollState != RecyclerView.SCROLL_STATE_IDLE) return@postDelayed
+            val v2 = lm().findViewByPosition(t)
+            if (v2 == null) {
+                lm().scrollToPositionWithOffset(t, -newOff)
+            } else {
+                val d = v2.top - (pageTopY() - newOff)
+                if (abs(d) > 1) list.scrollBy(0, d)
+            }
+        }, 450)
+    }
+
+    /** Quadrinhos com zoom, formato horizontal: a página nova entra com a mesma rolagem vertical relativa. */
+    private fun keepBookVerticalPos(cur: Int, t: Int) {
+        val sv = lm().findViewByPosition(cur) as? ScrollView ?: return
+        val child = sv.getChildAt(0) ?: return
+        val range = child.height - sv.height
+        val frac = if (range > 0) (sv.scrollY.toFloat() / range).coerceIn(0f, 1f) else 0f
+        val apply = Runnable {
+            val nv = lm().findViewByPosition(t) as? ScrollView
+            val c = nv?.getChildAt(0)
+            if (nv != null && c != null) {
+                val r = c.height - nv.height
+                nv.scrollTo(0, if (r > 0) (frac * r).toInt() else 0)
+            }
+        }
+        for (d in longArrayOf(20, 80, 200, 400, 700)) list.postDelayed(apply, d)
+    }
+
     /** Toque na borda: vai para a página seguinte (+1) ou anterior (-1), em qualquer modo e formato. */
     private fun pageStep(delta: Int) {
         val count = list.adapter?.itemCount ?: 0
         if (count == 0) return
+        if (!isBook && docIsComic && zoom > 1f) {
+            comicStepVertical(delta, count)
+            return
+        }
         if (!isBook) {
             val first = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
             val t = verticalTarget(delta, count)
@@ -1850,6 +1907,7 @@ class MainActivity : AppCompatActivity() {
         cur = cur.coerceIn(0, count - 1)
         val t = (cur + delta).coerceIn(0, count - 1)
         if (t == cur) return
+        if (docIsComic && zoom > 1f) keepBookVerticalPos(cur, t)
         val first = lm().findFirstVisibleItemPosition()
         val v0 = lm().findViewByPosition(first)
         if (v0 != null) {
