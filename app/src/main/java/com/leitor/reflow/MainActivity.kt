@@ -374,7 +374,9 @@ class MainActivity : AppCompatActivity() {
     private var docIsEpub = false // arquivo aberto é EPUB (só Refluxo, sem modo Original)
     private var docIsDocx = false // arquivo aberto é DOCX (também vale para DOC: mesmo comportamento)
     private var docIsDoc = false // arquivo aberto é DOC
-    private var docIsComic = false // arquivo aberto é CBZ/CBR (quadrinhos; também conta como docIsEpub)
+    private var docIsComic = false // arquivo aberto é CBZ/CBR (quadrinhos: usa o visualizador do modo Original)
+    private var comicNames: List<String> = emptyList() // imagem de cada página do CBZ/CBR
+    private lateinit var searchBtnRef: Button
     private val docxOriginal = true // DOCX: o texto sempre aparece com a formatação do documento
     private var epubFile: File? = null // cópia do EPUB aberto (acesso direto às figuras)
     @Volatile private var epubZip: java.util.zip.ZipFile? = null
@@ -1031,6 +1033,7 @@ class MainActivity : AppCompatActivity() {
         themeBtn = makeBtn("") { toggleTheme() }
         row1.addView(themeBtn)
         val searchBtn = makeBtn("🔍") { showSearchDialog() }
+        searchBtnRef = searchBtn
         (searchBtn.layoutParams as LinearLayout.LayoutParams).weight = 0.6f
         row1.addView(searchBtn)
         bar.addView(row1, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -1045,7 +1048,7 @@ class MainActivity : AppCompatActivity() {
         val rotBtn = makeBtn("\u21BB") { rotateScreen() }
         rotBtn.textSize = 18f
         rotBtn.contentDescription = "Girar a tela 90° para a direita"
-        rotBtn.layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { setMargins(dp(2), 0, dp(2), 0) }
+        rotBtn.layoutParams = LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.MATCH_PARENT).apply { setMargins(dp(2), 0, dp(2), 0) }
         row2.addView(layoutBtn)
         row2.addView(centerBtn)
         row2.addView(rotBtn)
@@ -1284,14 +1287,14 @@ class MainActivity : AppCompatActivity() {
         }
 
     private fun updateLabels() {
-        modeBtn.text = if (docIsComic) "Quadrinhos: só Refluxo"
-        else if (docIsEpub) "EPUB: só Refluxo"
+        modeBtn.text = if (docIsEpub) "EPUB: só Refluxo"
         else if (docIsDoc) "DOC: só Refluxo"
         else if (docIsDocx) "DOCX: só Refluxo"
         else if (reflowMode) "PDF Modo Original" else "PDF Modo Refluxo"
         // sem documento aberto: só o botão Abrir, maior; com documento: Abrir reduzido + botão de modo
         val noDoc = currentUri == null
-        modeBtn.visibility = if (noDoc) View.GONE else View.VISIBLE
+        modeBtn.visibility = if (noDoc || docIsComic) View.GONE else View.VISIBLE
+        searchBtnRef.visibility = if (docIsComic) View.GONE else View.VISIBLE
         openBtn.text = if (noDoc) "Abrir: PDF, EPUB, DOC, DOCX, CBZ, CBR" else "Abrir"
         (openBtn.layoutParams as LinearLayout.LayoutParams).weight = if (noDoc) 2f else 1f
         openBtn.requestLayout()
@@ -1514,7 +1517,7 @@ class MainActivity : AppCompatActivity() {
                 saveCenter() // o zoom lembrado leva junto a centralização atual
             }
         })
-        box.addView(row("Lembrar modo", keepMode) { c ->
+        if (!docIsComic) box.addView(row("Lembrar modo", keepMode) { c ->
             keepMode = c
             prefs.edit().putBoolean(dk("remM"), c).apply()
             if (c) saveDocSettings()
@@ -2030,8 +2033,8 @@ class MainActivity : AppCompatActivity() {
         docIsComic = lowName.endsWith(".cbz") || lowName.endsWith(".cbr") ||
             mime == "application/vnd.comicbook+zip" || mime == "application/vnd.comicbook-rar" ||
             mime == "application/x-cbz" || mime == "application/x-cbr"
-        docIsEpub = docIsComic || mime == "application/epub+zip" ||
-            (name ?: uri.lastPathSegment ?: "").lowercase().endsWith(".epub")
+        docIsEpub = !docIsComic && (mime == "application/epub+zip" ||
+            (name ?: uri.lastPathSegment ?: "").lowercase().endsWith(".epub"))
         docIsDocx = mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
             (name ?: uri.lastPathSegment ?: "").lowercase().endsWith(".docx")
         docIsDoc = mime == "application/msword" ||
@@ -2158,7 +2161,7 @@ class MainActivity : AppCompatActivity() {
         origScrollX = if (keepZoom) dp0.getInt(dk("scrollX"), 0).coerceAtLeast(0) else 0
         // aplica os ajustes lembrados deste PDF (ou o padrão)
         val savedReflow = keepMode && dp0.getBoolean(dk("reflow"), false)
-        val newReflow = docIsEpub || docIsDocx || savedReflow
+        val newReflow = !docIsComic && (docIsEpub || docIsDocx || savedReflow)
         val newLayout = if (keepLayout) dp0.getInt(dk("layout"), 1).coerceIn(0, 1) else 1
         val newZoom = if (keepZoom) dp0.getFloat(dk("zoom"), 1f).coerceIn(ZOOM_MIN, ZOOM_MAX) else 1f
         val newText = if (keepZoom) dp0.getFloat(dk("textSp"), TEXT_DEFAULT).coerceIn(TEXT_MIN, TEXT_MAX) else TEXT_DEFAULT
@@ -2190,7 +2193,8 @@ class MainActivity : AppCompatActivity() {
         val token = ++loadToken
         clearSelection()
         closeRenderer()
-        if (docIsEpub || docIsDocx) showEpub(uri, token)
+        if (docIsComic) showComic(uri, token)
+        else if (docIsEpub || docIsDocx) showEpub(uri, token)
         else if (reflowMode) showReflow(uri, token) else showOriginal(uri, token)
     }
 
@@ -2555,6 +2559,59 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    /** CBZ/CBR: abre as imagens como páginas do visualizador do modo Original (zoom, pinça e arrasto iguais). */
+    private fun showComic(uri: Uri, token: Int) {
+        sizes.clear()
+        imageAdapter.notifyDataSetChanged()
+        infoRequested.clear()
+        status.text = "Abrindo…"
+        Thread {
+            try {
+                val old = epubZip
+                epubZip = null
+                try { old?.close() } catch (_: Throwable) {}
+                val f = File(cacheDir, "comic_src_${System.identityHashCode(this@MainActivity)}")
+                contentResolver.openInputStream(uri)?.use { ins -> f.outputStream().use { ins.copyTo(it) } }
+                    ?: throw IllegalStateException("Não foi possível ler o arquivo")
+                epubFile = f
+                val ld = ComicBook.load(f, File(cacheDir, "comic_${System.identityHashCode(this@MainActivity)}.cbz"))
+                val z = java.util.zip.ZipFile(ld.zip)
+                val names = ld.result.pages.map { it.image ?: "" }
+                val dims = ArrayList<IntArray>()
+                for (n in names) {
+                    if (token != loadToken) { try { z.close() } catch (_: Throwable) {}; return@Thread }
+                    val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    try {
+                        val e = z.getEntry(n)
+                        if (e != null) z.getInputStream(e).use { android.graphics.BitmapFactory.decodeStream(it, null, o) }
+                    } catch (_: Throwable) {
+                    }
+                    dims.add(if (o.outWidth > 0 && o.outHeight > 0) intArrayOf(o.outWidth, o.outHeight) else intArrayOf(1000, 1500))
+                }
+                main.post {
+                    if (token != loadToken) {
+                        try { z.close() } catch (_: Throwable) {}
+                        return@post
+                    }
+                    epubZip = z
+                    comicNames = names
+                    sizes.addAll(dims)
+                    imageAdapter.notifyDataSetChanged()
+                    status.text = "${names.size} páginas · quadrinhos"
+                    restorePending()
+                    pendingPage = -1
+                    updatePageIndicator()
+                }
+            } catch (e: Throwable) {
+                main.post {
+                    if (token != loadToken) return@post
+                    status.text = "Não foi possível abrir o arquivo."
+                    Toast.makeText(this@MainActivity, "Não foi possível abrir o arquivo: ${e.message ?: "erro"}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
     // ------------------------------------------------------------------ documento compartilhado
 
     /**
@@ -2579,6 +2636,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Lê os links de uma página do modo original, só quando ela aparece. */
     private fun requestLinks(pos: Int) {
+        if (docIsComic) return
         if (pageInfo.containsKey(pos) || !infoRequested.add(pos)) return
         val uri = currentUri ?: return
         val token = loadToken
@@ -2911,6 +2969,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Palavras da página, lidas em segundo plano na primeira vez. */
     private fun wordsFor(pos: Int, cb: (List<Word>) -> Unit) {
+        if (docIsComic) return
         val cached = wordCache[pos]
         if (cached != null) {
             cb(cached)
@@ -3508,6 +3567,10 @@ class MainActivity : AppCompatActivity() {
             }
             requestLinks(position)
 
+            if (docIsComic) {
+                bindComic(h, position, displayW, sz)
+                return
+            }
             val r = renderer ?: return
             // limita o bitmap para não estourar a memória em telas grandes com zoom
             var renderW = minOf(displayW, RENDER_MAX_W)
@@ -3548,6 +3611,38 @@ class MainActivity : AppCompatActivity() {
                         scheduleTiles()
                     }
                 }
+            }
+        }
+
+        /** Quadrinhos: lê a imagem do arquivo já reduzida para a largura que aparece na tela. */
+        private fun bindComic(h: ImgVH, position: Int, displayW: Int, sz: IntArray) {
+            var renderW = minOf(displayW, RENDER_MAX_W).coerceAtLeast(1)
+            if (renderW.toLong() * renderW * sz[1] / sz[0] > RENDER_MAX_PIXELS) {
+                renderW = Math.sqrt(RENDER_MAX_PIXELS.toDouble() * sz[0] / sz[1]).toInt().coerceAtLeast(1)
+            }
+            val key = "$position|$renderW"
+            val hit = bmpCache.get(key)
+            if (hit != null) {
+                h.img.setImageBitmap(hit)
+                return
+            }
+            val zip = epubZip ?: return
+            val name = comicNames.getOrNull(position) ?: return
+            val srcW = sz[0]
+            renderExec.execute {
+                if (h.boundPos != position) return@execute
+                val bmp = try {
+                    val e = zip.getEntry(name) ?: throw IllegalStateException()
+                    var sample = 1
+                    while (srcW / (sample * 2) >= renderW) sample *= 2
+                    val o = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                    zip.getInputStream(e).use { android.graphics.BitmapFactory.decodeStream(it, null, o) }
+                } catch (_: Throwable) {
+                    null
+                }
+                val done = bmp ?: return@execute
+                bmpCache.put(key, done)
+                main.post { if (h.boundPos == position) h.img.setImageBitmap(done) }
             }
         }
 
