@@ -1671,6 +1671,8 @@ class MainActivity : AppCompatActivity() {
                     }
                     return true
                 }
+                // quadrinhos com zoom, formato vertical: inércia nativa, igual à do deslize lateral
+                if (docIsComic && !isBook && zoom > 1f) return false
                 val v = if (isBook) velocityX else velocityY
                 if (isBook && !reflowMode && zoom > 1f) return true
                 val dist = (v * VERTICAL_FLING_SECONDS).toInt()
