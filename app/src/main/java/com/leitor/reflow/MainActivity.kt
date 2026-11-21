@@ -428,6 +428,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var searchBtnRef: Button
     private lateinit var swipeBtn: Button
     private lateinit var rowTwo: LinearLayout
+    private lateinit var rowOne: LinearLayout
     private lateinit var centerBtnRef: Button
     private val sizeBtns = ArrayList<Button>()
     private var openBtnMinH = 0
@@ -1107,6 +1108,7 @@ class MainActivity : AppCompatActivity() {
         swipeBtn.visibility = View.GONE
         row1.addView(swipeBtn)
         bar.addView(row1, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        rowOne = row1
 
         val row2 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1390,14 +1392,17 @@ class MainActivity : AppCompatActivity() {
         centerBtnRef.visibility = if (reflowMode) View.GONE else View.VISIBLE // só PDF Original, CBZ e CBR
         openBtn.text = if (noDoc) "Toque aqui para Abrir: PDF, EPUB, DOCX, DOC, CBZ, CBR" else "Abrir"
         openBtn.maxLines = if (noDoc) 2 else 1
-        openBtn.minHeight = if (noDoc) dp(72) else openBtnMinH
-        openBtn.minimumHeight = if (noDoc) dp(72) else openBtnMinH
+        openBtn.minHeight = openBtnMinH
+        openBtn.minimumHeight = openBtnMinH
         openBtn.textSize = 13f
         openBtn.setTypeface(null, if (noDoc) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
         (openBtn.layoutParams as LinearLayout.LayoutParams).apply {
             weight = 1f
-            topMargin = if (noDoc) dp(24) else 0 // tela inicial: botão um pouco mais abaixo
+            topMargin = 0
+            // tela inicial: altura fixa (o dobro do que era) e a linha inteira um pouco mais abaixo
+            height = if (noDoc) dp(72) else ViewGroup.LayoutParams.WRAP_CONTENT
         }
+        rowOne.setPadding(0, if (noDoc) dp(24) else 0, 0, 0)
         openBtn.gravity = Gravity.CENTER // texto centrado também na vertical
         openBtn.includeFontPadding = false
         styleOpenBtn()
