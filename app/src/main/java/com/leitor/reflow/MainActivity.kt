@@ -759,6 +759,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            cancelComicFling()
             pinchedRecently = false
             canPanRightAtDown = hScroll.canScrollHorizontally(1)
             canPanLeftAtDown = hScroll.canScrollHorizontally(-1)
@@ -1640,6 +1641,40 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Monta a lista conforme o modo (refluxo/original) e o formato (vertical/horizontal). */
+    private var comicFlingRun: Runnable? = null
+
+    private fun cancelComicFling() {
+        comicFlingRun?.let { list.removeCallbacks(it) }
+        comicFlingRun = null
+    }
+
+    /**
+     * Inércia vertical dos quadrinhos com zoom: usa o mesmo OverScroller do deslize lateral do Android,
+     * com a mesma velocidade, então o deslize vertical corre igual ao horizontal.
+     */
+    private fun comicFling(vy: Int) {
+        cancelComicFling()
+        val sc = android.widget.OverScroller(this)
+        sc.fling(0, 0, 0, vy, 0, 0, Int.MIN_VALUE / 2, Int.MAX_VALUE / 2)
+        var last = 0
+        val run = object : Runnable {
+            override fun run() {
+                if (!sc.computeScrollOffset()) { comicFlingRun = null; return }
+                val y = sc.currY
+                val d = y - last
+                last = y
+                if (d != 0) {
+                    val before = list.computeVerticalScrollOffset()
+                    list.scrollBy(0, d)
+                    if (list.computeVerticalScrollOffset() == before) { comicFlingRun = null; return } // chegou ao fim
+                }
+                list.postOnAnimation(this)
+            }
+        }
+        comicFlingRun = run
+        list.postOnAnimation(run)
+    }
+
     private fun applySwipeLock() {
         (list.layoutManager as? PagerLayoutManager)?.swipeLock = swipeLock && docIsComic
     }
@@ -1672,7 +1707,10 @@ class MainActivity : AppCompatActivity() {
                     return true
                 }
                 // quadrinhos com zoom, formato vertical: inércia nativa, igual à do deslize lateral
-                if (docIsComic && !isBook && zoom > 1f) return false
+                if (docIsComic && !isBook && zoom > 1f) {
+                    comicFling(velocityY)
+                    return true
+                }
                 val v = if (isBook) velocityX else velocityY
                 if (isBook && !reflowMode && zoom > 1f) return true
                 val dist = (v * VERTICAL_FLING_SECONDS).toInt()
