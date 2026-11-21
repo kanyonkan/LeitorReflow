@@ -1741,6 +1741,9 @@ class MainActivity : AppCompatActivity() {
      */
     private fun comicFling(vy: Int, limit: Int = Int.MAX_VALUE) {
         cancelComicFling()
+        // o Android deixa a lista "arrastando" quando o deslize é tratado aqui; sem isso o estado
+        // nunca voltava a parado e o novo arrasto não recalculava a página âncora da trava
+        list.stopScroll()
         val sc = android.widget.OverScroller(this)
         sc.fling(0, 0, 0, vy, 0, 0, Int.MIN_VALUE / 2, Int.MAX_VALUE / 2)
         Dbg.log("comicFling vy=$vy distanciaFinal=${sc.finalY}")
