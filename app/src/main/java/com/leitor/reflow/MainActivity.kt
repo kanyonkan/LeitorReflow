@@ -1371,10 +1371,10 @@ class MainActivity : AppCompatActivity() {
         swipeBtn.visibility = if (docIsComic && !noDoc) View.VISIBLE else View.GONE
         swipeBtn.text = if (swipeLock) "Soltar troca por deslizamento" else "Barrar troca por deslizamento"
         rowTwo.visibility = if (noDoc) View.GONE else View.VISIBLE
-        openBtn.text = if (noDoc) "Abrir: PDF, EPUB, DOCX, DOC, CBZ, CBR" else "Abrir"
-        openBtn.maxLines = 1
-        openBtn.minHeight = if (noDoc) dp(36) else openBtnMinH
-        openBtn.minimumHeight = if (noDoc) dp(36) else openBtnMinH
+        openBtn.text = if (noDoc) "Toque aqui para Abrir: PDF, EPUB, DOCX, DOC, CBZ, CBR" else "Abrir"
+        openBtn.maxLines = if (noDoc) 2 else 1
+        openBtn.minHeight = if (noDoc) dp(72) else openBtnMinH
+        openBtn.minimumHeight = if (noDoc) dp(72) else openBtnMinH
         openBtn.textSize = if (noDoc) 12f else 13f
         (openBtn.layoutParams as LinearLayout.LayoutParams).weight = 1f
         openBtn.requestLayout()
