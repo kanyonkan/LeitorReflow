@@ -146,6 +146,41 @@ class PagerLayoutManager(context: Context, orientation: Int) :
     LinearLayoutManager(context, orientation, false) {
     var userScrollEnabled = true
 
+    /** Trava de troca por deslizamento (quadrinhos): o arrasto do dedo não sai da página atual. */
+    var swipeLock = false
+    private var dragging = false
+    private var anchor = -1
+
+    override fun onScrollStateChanged(state: Int) {
+        super.onScrollStateChanged(state)
+        dragging = state == RecyclerView.SCROLL_STATE_DRAGGING
+        if (dragging) {
+            val vert = orientation == VERTICAL
+            val lo = if (vert) paddingTop else paddingLeft
+            val hi = if (vert) height - paddingBottom else width - paddingRight
+            var best = -1
+            var bestO = Int.MIN_VALUE
+            for (i in 0 until childCount) {
+                val v = getChildAt(i) ?: continue
+                val a = if (vert) getDecoratedTop(v) else getDecoratedLeft(v)
+                val b = if (vert) getDecoratedBottom(v) else getDecoratedRight(v)
+                val o = minOf(b, hi) - maxOf(a, lo)
+                if (o > bestO) { bestO = o; best = getPosition(v) }
+            }
+            anchor = best
+        }
+    }
+
+    /** Limita o arrasto do dedo ao que ainda cabe dentro da página âncora. */
+    private fun clampDrag(d: Int, vert: Boolean): Int {
+        val v = findViewByPosition(anchor) ?: return 0
+        val lo = if (vert) paddingTop else paddingLeft
+        val hi = if (vert) height - paddingBottom else width - paddingRight
+        val start = if (vert) getDecoratedTop(v) else getDecoratedLeft(v)
+        val end = if (vert) getDecoratedBottom(v) else getDecoratedRight(v)
+        return if (d > 0) minOf(d, maxOf(0, end - hi)) else maxOf(d, -maxOf(0, lo - start))
+    }
+
     /**
      * Posição do último salto direto. Durante o processamento do Refluxo cada atualização de página
      * fazia a lista se re-ancorar sozinha numa página antiga (a lista voltava a
@@ -189,14 +224,20 @@ class PagerLayoutManager(context: Context, orientation: Int) :
     }
 
     override fun scrollVerticallyBy(dy: Int, recycler: RecyclerView.Recycler, state: RecyclerView.State): Int {
-        if (dy != 0) stickPos = -1
-        val r = super.scrollVerticallyBy(dy, recycler, state)
+        var d = dy
+        if (swipeLock && dragging && d != 0) d = clampDrag(d, true)
+        if (d != 0) stickPos = -1
+        if (d == 0) return 0
+        val r = super.scrollVerticallyBy(d, recycler, state)
         return r
     }
 
     override fun scrollHorizontallyBy(dx: Int, recycler: RecyclerView.Recycler, state: RecyclerView.State): Int {
-        if (dx != 0) stickPos = -1
-        val r = super.scrollHorizontallyBy(dx, recycler, state)
+        var d = dx
+        if (swipeLock && dragging && d != 0) d = clampDrag(d, false)
+        if (d != 0) stickPos = -1
+        if (d == 0) return 0
+        val r = super.scrollHorizontallyBy(d, recycler, state)
         return r
     }
 
@@ -377,6 +418,8 @@ class MainActivity : AppCompatActivity() {
     private var docIsComic = false // arquivo aberto é CBZ/CBR (quadrinhos: usa o visualizador do modo Original)
     private var comicNames: List<String> = emptyList() // imagem de cada página do CBZ/CBR
     private lateinit var searchBtnRef: Button
+    private lateinit var swipeBtn: Button
+    private var swipeLock = false // só quadrinhos: o deslizamento do dedo não troca de página
     private val docxOriginal = true // DOCX: o texto sempre aparece com a formatação do documento
     private var epubFile: File? = null // cópia do EPUB aberto (acesso direto às figuras)
     @Volatile private var epubZip: java.util.zip.ZipFile? = null
@@ -749,7 +792,7 @@ class MainActivity : AppCompatActivity() {
             return true
         }
         tapDetector.onTouchEvent(ev)
-        val zoomedBook = isBook && !reflowMode && zoom > 1f
+        val zoomedBook = isBook && !reflowMode && zoom > 1f && !(swipeLock && docIsComic)
         if (zoomedBook) {
             // arrasto para os lados com zoom: as páginas formam uma "faixa" contínua (ver handleStrip)
             when (handleStrip(ev)) {
@@ -1036,6 +1079,15 @@ class MainActivity : AppCompatActivity() {
         searchBtnRef = searchBtn
         (searchBtn.layoutParams as LinearLayout.LayoutParams).weight = 0.6f
         row1.addView(searchBtn)
+        swipeBtn = makeBtn("Barrar troca por deslizamento") {
+            swipeLock = !swipeLock
+            applySwipeLock()
+            applyTheme()
+            updateLabels()
+        }
+        (swipeBtn.layoutParams as LinearLayout.LayoutParams).weight = 1.5f
+        swipeBtn.visibility = View.GONE
+        row1.addView(swipeBtn)
         bar.addView(row1, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         val row2 = LinearLayout(this).apply {
@@ -1295,6 +1347,8 @@ class MainActivity : AppCompatActivity() {
         val noDoc = currentUri == null
         modeBtn.visibility = if (noDoc || docIsComic) View.GONE else View.VISIBLE
         searchBtnRef.visibility = if (docIsComic) View.GONE else View.VISIBLE
+        swipeBtn.visibility = if (docIsComic && !noDoc) View.VISIBLE else View.GONE
+        swipeBtn.text = if (swipeLock) "Soltar troca por deslizamento" else "Barrar troca por deslizamento"
         openBtn.text = if (noDoc) "Abrir: PDF, EPUB, DOC, DOCX, CBZ, CBR" else "Abrir"
         (openBtn.layoutParams as LinearLayout.LayoutParams).weight = if (noDoc) 2f else 1f
         openBtn.requestLayout()
@@ -1578,10 +1632,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Monta a lista conforme o modo (refluxo/original) e o formato (vertical/horizontal). */
+    private fun applySwipeLock() {
+        (list.layoutManager as? PagerLayoutManager)?.swipeLock = swipeLock && docIsComic
+    }
+
     private fun applyMode() {
         applyWidth()
         val orientation = if (isBook) LinearLayoutManager.HORIZONTAL else LinearLayoutManager.VERTICAL
         list.layoutManager = PagerLayoutManager(this, orientation)
+        applySwipeLock()
         (hScroll as? FixedWidthScroll)?.verticalBias = !isBook
         // desliga o snap antes de refazer: se ele já estava ligado a esta lista, um simples
         // "anexar de novo" não reinstala o ouvinte de fling e o deslize passaria a correr solto
@@ -1593,6 +1652,7 @@ class MainActivity : AppCompatActivity() {
         list.onFlingListener = object : RecyclerView.OnFlingListener() {
             override fun onFling(velocityX: Int, velocityY: Int): Boolean {
                 if (scaling || pinchedRecently || selDragging) return true
+                if (swipeLock && docIsComic) return true // sem inércia: o deslize não troca de página
                 val v = if (isBook) velocityX else velocityY
                 if (isBook && !reflowMode && zoom > 1f) return true
                 val dist = (v * VERTICAL_FLING_SECONDS).toInt()
@@ -1635,6 +1695,10 @@ class MainActivity : AppCompatActivity() {
         buttons.forEach {
             it.setTextColor(fg)
             it.setBackgroundColor(if (night) Color.parseColor("#2C2C2C") else Color.parseColor("#D8D3C4"))
+        }
+        if (swipeLock && docIsComic) { // trava acionada: botão em destaque
+            swipeBtn.setBackgroundColor(Color.parseColor("#B5541C"))
+            swipeBtn.setTextColor(Color.WHITE)
         }
         controller.isAppearanceLightStatusBars = !night
         controller.isAppearanceLightNavigationBars = !night
@@ -2139,6 +2203,8 @@ class MainActivity : AppCompatActivity() {
         clearSelection()
         currentUri = uri
         currentKey = docKey(uri)
+        swipeLock = false
+        applySwipeLock()
         backStack.clear()
         // ajustes deste PDF: cada "Lembrar" começa em Não e só vale se foi marcado neste mesmo PDF
         val dp0 = getSharedPreferences("leitor", MODE_PRIVATE)
