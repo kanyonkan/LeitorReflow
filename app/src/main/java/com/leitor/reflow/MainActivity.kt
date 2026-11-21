@@ -1739,7 +1739,7 @@ class MainActivity : AppCompatActivity() {
      * Inércia vertical dos quadrinhos com zoom: usa o mesmo OverScroller do deslize lateral do Android,
      * com a mesma velocidade, então o deslize vertical corre igual ao horizontal.
      */
-    private fun comicFling(vy: Int) {
+    private fun comicFling(vy: Int, limit: Int = Int.MAX_VALUE) {
         cancelComicFling()
         val sc = android.widget.OverScroller(this)
         sc.fling(0, 0, 0, vy, 0, 0, Int.MIN_VALUE / 2, Int.MAX_VALUE / 2)
@@ -1755,7 +1755,9 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
                 frames++
-                val y = sc.currY
+                var y = sc.currY
+                val capped = abs(y) >= limit
+                if (capped) y = if (y < 0) -limit else limit
                 val d = y - last
                 last = y
                 if (d != 0) {
@@ -1766,6 +1768,11 @@ class MainActivity : AppCompatActivity() {
                         Dbg.log("comicFling parou: lista não andou (fim?) quadros=$frames percorrido=$last")
                         return
                     }
+                }
+                if (capped) {
+                    comicFlingRun = null
+                    Dbg.log("comicFling parou na borda quadros=$frames tempo=${android.os.SystemClock.uptimeMillis() - t0}ms percorrido=$last")
+                    return
                 }
                 list.postOnAnimation(this)
             }
@@ -1802,10 +1809,7 @@ class MainActivity : AppCompatActivity() {
                     // trava ligada: o deslize rápido leva a página até a borda, sem passar para outra
                     if (!isBook) {
                         val dy = (list.layoutManager as? PagerLayoutManager)?.edgeDelta(velocityY > 0) ?: 0
-                        if (dy != 0) {
-                            val ms = (250f + abs(dy) * 0.25f).coerceAtMost(900f).toInt()
-                            list.smoothScrollBy(0, dy, android.view.animation.DecelerateInterpolator(2f), ms)
-                        }
+                        if (dy != 0) comicFling(velocityY, abs(dy)) // mesma inércia nativa, parando na borda
                     }
                     return true
                 }
