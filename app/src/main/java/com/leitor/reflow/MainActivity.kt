@@ -2867,7 +2867,7 @@ class MainActivity : AppCompatActivity() {
                     ?: throw IllegalStateException("Não foi possível ler o arquivo")
                 epubFile = f
                 val ld = ComicBook.load(f, File(cacheDir, "comic_${System.identityHashCode(this@MainActivity)}.cbz"))
-                val z = java.util.zip.ZipFile(ld.zip)
+                val z = java.util.zip.ZipFile(ld.zip, ld.charset)
                 val names = ld.result.pages.map { it.image ?: "" }
                 val dims = ArrayList<IntArray>()
                 for (n in names) {
@@ -2895,6 +2895,7 @@ class MainActivity : AppCompatActivity() {
                     updatePageIndicator()
                 }
             } catch (e: Throwable) {
+                Dbg.log("ERRO ao abrir quadrinhos: ${e.javaClass.name}: ${e.message}\n${e.stackTrace.take(6).joinToString("\n")}")
                 main.post {
                     if (token != loadToken) return@post
                     status.text = "Não foi possível abrir o arquivo."

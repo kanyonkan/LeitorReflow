@@ -14,7 +14,11 @@ import java.util.zip.ZipOutputStream
  */
 object ComicBook {
 
-    private val imgExt = listOf(".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
+    private val imgExt = listOf(".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".webp", ".gif", ".bmp")
+    private val notImgExt = listOf(
+        ".xml", ".txt", ".nfo", ".db", ".ini", ".html", ".htm", ".json", ".url", ".sfv", ".md5", ".md",
+        ".pdf", ".zip", ".rar", ".cbz", ".cbr", ".thumbs", ".ds_store", ".lnk", ".log", ".css", ".js"
+    )
 
     private fun isImage(n: String): Boolean {
         val l = n.lowercase()
@@ -50,30 +54,66 @@ object ComicBook {
         (x.length - i) - (y.length - j)
     }
 
-    class Loaded(val result: EpubBook.Result, val zip: File)
+    class Loaded(val result: EpubBook.Result, val zip: File, val charset: java.nio.charset.Charset = Charsets.UTF_8)
 
     /** [src] é o arquivo copiado; [work] é onde guardar o zip refeito (só usado no RAR). */
     fun load(src: File, work: File): Loaded {
-        val head = ByteArray(4)
-        src.inputStream().use { it.read(head) }
+        val head = ByteArray(8)
+        val got = src.inputStream().use { it.read(head) }
+        val hex = head.take(maxOf(got, 0)).joinToString(" ") { "%02X".format(it) }
+        Dbg.log("CBZ/CBR: tamanho=${src.length()} bytes, início=$hex")
         val isZip = head[0] == 0x50.toByte() && head[1] == 0x4B.toByte()
         val isRar = head[0] == 0x52.toByte() && head[1] == 0x61.toByte() && head[2] == 0x72.toByte()
+        val is7z = head[0] == 0x37.toByte() && head[1] == 0x7A.toByte() && head[2] == 0xBC.toByte()
         val zipFile: File = when {
             isZip -> src
             isRar -> {
                 repack(src, work)
                 work
             }
-            else -> throw IllegalArgumentException("Formato de quadrinhos não reconhecido")
+            is7z -> throw IllegalArgumentException("Arquivo 7z (CB7) não é suportado")
+            else -> throw IllegalArgumentException("Formato de quadrinhos não reconhecido (início $hex)")
+        }
+        // nomes fora do padrão UTF-8 derrubam a abertura normal: tenta de novo com outra codificação
+        var cs: java.nio.charset.Charset = Charsets.UTF_8
+        val zf = try {
+            ZipFile(zipFile)
+        } catch (e: Throwable) {
+            Dbg.log("CBZ/CBR: abertura normal falhou (${e.javaClass.simpleName}: ${e.message}); tentando outra codificação")
+            cs = Charsets.ISO_8859_1
+            ZipFile(zipFile, cs)
         }
         val names = ArrayList<String>()
-        ZipFile(zipFile).use { z ->
-            for (e in z.entries()) if (!e.isDirectory && isImage(e.name)) names.add(e.name)
+        val others = ArrayList<String>()
+        var total = 0
+        zf.use { z ->
+            for (e in z.entries()) {
+                if (e.isDirectory) continue
+                total++
+                val l = e.name.lowercase()
+                if (isImage(e.name)) names.add(e.name)
+                else if (e.size > 2048 && notImgExt.none { l.endsWith(it) } &&
+                    !l.substringAfterLast('/').startsWith(".") && !l.startsWith("__macosx/")
+                ) others.add(e.name)
+            }
+            Dbg.log("CBZ/CBR: entradas=$total imagens=${names.size} outras=${others.size} exemplos=${(names + others).take(3)} metodos=${z.entries().asSequence().map { it.method }.toSet()}")
+            // nenhum arquivo com extensão de imagem: confere se os demais abrem como imagem
+            if (names.isEmpty() && others.isNotEmpty()) {
+                for (n in others) {
+                    val e = z.getEntry(n) ?: continue
+                    val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    try {
+                        z.getInputStream(e).use { android.graphics.BitmapFactory.decodeStream(it, null, o) }
+                    } catch (_: Throwable) {
+                    }
+                    if (o.outWidth > 0 && o.outHeight > 0) names.add(n)
+                }
+            }
         }
-        if (names.isEmpty()) throw IllegalArgumentException("Nenhuma imagem encontrada")
+        if (names.isEmpty()) throw IllegalArgumentException("Nenhuma imagem encontrada (entradas: $total)")
         names.sortWith(natural)
         val pages = names.map { EpubBook.Page("", emptyList(), it) }
-        return Loaded(EpubBook.Result(pages, emptyList()), zipFile)
+        return Loaded(EpubBook.Result(pages, emptyList()), zipFile, cs)
     }
 
     private fun repack(rar: File, out: File) {
