@@ -374,6 +374,7 @@ class MainActivity : AppCompatActivity() {
     private var docIsEpub = false // arquivo aberto é EPUB (só Refluxo, sem modo Original)
     private var docIsDocx = false // arquivo aberto é DOCX (também vale para DOC: mesmo comportamento)
     private var docIsDoc = false // arquivo aberto é DOC
+    private var docIsComic = false // arquivo aberto é CBZ/CBR (quadrinhos; também conta como docIsEpub)
     private val docxOriginal = true // DOCX: o texto sempre aparece com a formatação do documento
     private var epubFile: File? = null // cópia do EPUB aberto (acesso direto às figuras)
     @Volatile private var epubZip: java.util.zip.ZipFile? = null
@@ -1017,6 +1018,7 @@ class MainActivity : AppCompatActivity() {
         openBtn = makeBtn("Abrir") { picker.launch(
                 arrayOf(
                     "application/pdf", "application/epub+zip", "application/msword",
+                    "application/vnd.comicbook+zip", "application/vnd.comicbook-rar", "application/x-cbz", "application/x-cbr",
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     "application/octet-stream"
                 )
@@ -1055,7 +1057,7 @@ class MainActivity : AppCompatActivity() {
         bar.addView(row2, row2Lp)
 
         status = TextView(this).apply {
-            text = "Toque em Abrir e escolha um PDF, DOC, DOCX ou EPUB."
+            text = "Toque em Abrir e escolha um PDF, DOC, DOCX, EPUB, CBZ ou CBR."
             textSize = 13f
             setPadding(dp(10), dp(6), dp(10), dp(2))
         }
@@ -1282,14 +1284,15 @@ class MainActivity : AppCompatActivity() {
         }
 
     private fun updateLabels() {
-        modeBtn.text = if (docIsEpub) "EPUB: só Refluxo"
+        modeBtn.text = if (docIsComic) "Quadrinhos: só Refluxo"
+        else if (docIsEpub) "EPUB: só Refluxo"
         else if (docIsDoc) "DOC: só Refluxo"
         else if (docIsDocx) "DOCX: só Refluxo"
-        else if (reflowMode) "PDF: Refluxo" else "PDF: Original"
+        else if (reflowMode) "PDF Modo Original" else "PDF Modo Refluxo"
         // sem documento aberto: só o botão Abrir, maior; com documento: Abrir reduzido + botão de modo
         val noDoc = currentUri == null
         modeBtn.visibility = if (noDoc) View.GONE else View.VISIBLE
-        openBtn.text = if (noDoc) "Abrir: PDF, DOC, DOCX, EPUB" else "Abrir"
+        openBtn.text = if (noDoc) "Abrir: PDF, EPUB, DOC, DOCX, CBZ, CBR" else "Abrir"
         (openBtn.layoutParams as LinearLayout.LayoutParams).weight = if (noDoc) 2f else 1f
         openBtn.requestLayout()
         themeBtn.text = if (night) "☀ Dia" else "☾ Noite"
@@ -1550,7 +1553,7 @@ class MainActivity : AppCompatActivity() {
     private fun toggleMode() {
         if (docIsDocx || docIsEpub) {
             Toast.makeText(
-                this, "${if (docIsDoc) "DOC" else if (docIsDocx) "DOCX" else "EPUB"} só tem o modo Refluxo.", Toast.LENGTH_SHORT
+                this, "${if (docIsComic) "Quadrinhos" else if (docIsDoc) "DOC" else if (docIsDocx) "DOCX" else "EPUB"} só tem o modo Refluxo.", Toast.LENGTH_SHORT
             ).show()
             return
         }
@@ -2023,14 +2026,18 @@ class MainActivity : AppCompatActivity() {
         }
         // nome para exibir, sem a extensão .pdf
         val mime = try { contentResolver.getType(uri) } catch (_: Exception) { null }
-        docIsEpub = mime == "application/epub+zip" ||
+        val lowName = (name ?: uri.lastPathSegment ?: "").lowercase()
+        docIsComic = lowName.endsWith(".cbz") || lowName.endsWith(".cbr") ||
+            mime == "application/vnd.comicbook+zip" || mime == "application/vnd.comicbook-rar" ||
+            mime == "application/x-cbz" || mime == "application/x-cbr"
+        docIsEpub = docIsComic || mime == "application/epub+zip" ||
             (name ?: uri.lastPathSegment ?: "").lowercase().endsWith(".epub")
         docIsDocx = mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
             (name ?: uri.lastPathSegment ?: "").lowercase().endsWith(".docx")
         docIsDoc = mime == "application/msword" ||
             (name ?: uri.lastPathSegment ?: "").lowercase().endsWith(".doc")
         if (docIsDoc) docIsDocx = true
-        currentName = (name ?: uri.lastPathSegment ?: "").replace(Regex("(?i)\\.(pdf|epub|docx|doc)$"), "")
+        currentName = (name ?: uri.lastPathSegment ?: "").replace(Regex("(?i)\\.(pdf|epub|docx|doc|cbz|cbr)$"), "")
         // o nome do PDF aparece na lista de apps recentes, para distinguir as janelas
         try { setTaskDescription(android.app.ActivityManager.TaskDescription(currentName)) } catch (_: Throwable) {}
         return "pg_" + (name ?: uri.toString()) + "|" + size
@@ -2320,7 +2327,7 @@ class MainActivity : AppCompatActivity() {
     private fun showEpub(uri: Uri, token: Int) {
         if (pagesUri == uri && pagesComplete) {
             reflowAdapter.notifyDataSetChanged()
-            status.text = "${pages.size} páginas · ${if (docIsDoc) "DOC" else if (docIsDocx) "DOCX" else "EPUB"}"
+            status.text = "${pages.size} páginas · ${if (docIsComic) "quadrinhos" else if (docIsDoc) "DOC" else if (docIsDocx) "DOCX" else "EPUB"}"
             restorePending()
             pendingPage = -1
             updatePageIndicator()
@@ -2345,15 +2352,20 @@ class MainActivity : AppCompatActivity() {
                 contentResolver.openInputStream(uri)?.use { ins -> f.outputStream().use { ins.copyTo(it) } }
                     ?: throw IllegalStateException("Não foi possível ler o arquivo")
                 epubFile = f
-                val book = if (docIsDoc) DocBook.load(f) else if (docIsDocx) DocxBook.load(f) else EpubBook.load(f)
-                epubZip = try { java.util.zip.ZipFile(f) } catch (_: Throwable) { null } // .doc não é zip
+                var zipSrc = f
+                val book = if (docIsComic) {
+                    val ld = ComicBook.load(f, File(cacheDir, "comic_${System.identityHashCode(this@MainActivity)}.cbz"))
+                    zipSrc = ld.zip
+                    ld.result
+                } else if (docIsDoc) DocBook.load(f) else if (docIsDocx) DocxBook.load(f) else EpubBook.load(f)
+                epubZip = try { java.util.zip.ZipFile(zipSrc) } catch (_: Throwable) { null } // .doc não é zip
                 main.post {
                     if (token != loadToken) return@post
                     epubBmp.evictAll()
                     reflowTargets.addAll(book.targets)
                     for (p in book.pages) pages.add(PageText(p.text, p.spans, true, p.image, p.fmts))
                     reflowAdapter.notifyDataSetChanged()
-                    status.text = "${pages.size} páginas · ${if (docIsDoc) "DOC" else if (docIsDocx) "DOCX" else "EPUB"}"
+                    status.text = "${pages.size} páginas · ${if (docIsComic) "quadrinhos" else if (docIsDoc) "DOC" else if (docIsDocx) "DOCX" else "EPUB"}"
                     pagesComplete = true
                     restorePending()
                     pendingPage = -1
@@ -3305,7 +3317,7 @@ class MainActivity : AppCompatActivity() {
             val imgName = pt.image
             if (imgName != null) {
                 h.img.visibility = View.VISIBLE
-                h.img.maxHeight = (resources.displayMetrics.heightPixels * 0.85f).toInt()
+                h.img.maxHeight = (resources.displayMetrics.heightPixels * (if (docIsComic) 0.95f else 0.85f)).toInt()
                 h.img.tag = imgName
                 h.img.setImageDrawable(null)
                 loadEpubImage(imgName) { bmp -> if (h.img.tag == imgName) h.img.setImageBitmap(bmp) }

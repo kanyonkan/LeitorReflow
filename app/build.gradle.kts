@@ -41,4 +41,5 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("org.jsoup:jsoup:1.17.2")
+    implementation("com.github.junrar:junrar:7.5.5")
 }
