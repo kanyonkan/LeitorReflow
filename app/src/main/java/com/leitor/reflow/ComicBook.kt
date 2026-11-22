@@ -61,6 +61,7 @@ object ComicBook {
         val head = ByteArray(8)
         val got = src.inputStream().use { it.read(head) }
         val hex = head.take(maxOf(got, 0)).joinToString(" ") { "%02X".format(it) }
+        Dbg.log("CBZ/CBR: tamanho=${src.length()} bytes, início=$hex")
         val isZip = head[0] == 0x50.toByte() && head[1] == 0x4B.toByte()
         val isRar = head[0] == 0x52.toByte() && head[1] == 0x61.toByte() && head[2] == 0x72.toByte()
         val is7z = head[0] == 0x37.toByte() && head[1] == 0x7A.toByte() && head[2] == 0xBC.toByte()
@@ -153,8 +154,10 @@ object ComicBook {
                 }
             }
         } catch (e: IllegalArgumentException) {
+            Dbg.log("CBR: erro de aplicativo: ${e.message}")
             throw e
         } catch (e: Throwable) {
+            Dbg.log("CBR: ERRO ${e.javaClass.name}: ${e.message}\n${e.stackTrace.take(8).joinToString("\n")}")
             throw IllegalArgumentException("Não foi possível ler este CBR (o formato RAR5 não é suportado)")
         }
     }
