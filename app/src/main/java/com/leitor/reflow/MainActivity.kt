@@ -1110,7 +1110,7 @@ class MainActivity : AppCompatActivity() {
         openBtn = makeBtn("Abrir") { picker.launch(
                 arrayOf(
                     "application/pdf", "application/epub+zip", "application/msword",
-                    "application/vnd.comicbook+zip", "application/vnd.comicbook-rar", "application/x-cbz", "application/x-cbr",
+                    "application/vnd.comicbook+zip", "application/vnd.comicbook-rar", "application/x-cbz", "application/x-cbr", "application/x-cb7", "application/x-7z-compressed",
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     "application/octet-stream"
                 )
@@ -1167,7 +1167,7 @@ class MainActivity : AppCompatActivity() {
         rowTwo = row2
 
         status = TextView(this).apply {
-            text = "Toque em Abrir e escolha um PDF, DOC, DOCX, EPUB, CBZ ou CBR."
+            text = "Toque em Abrir e escolha um PDF, DOC, DOCX, EPUB, CBZ, CBR ou CB7."
             textSize = 13f
             setPadding(dp(10), dp(6), dp(10), dp(2))
         }
@@ -1423,7 +1423,7 @@ class MainActivity : AppCompatActivity() {
         swipeBtn.text = if (swipeLock) "Soltar troca por deslizamento" else "Barrar troca por deslizamento"
         rowTwo.visibility = if (noDoc) View.GONE else View.VISIBLE
         centerBtnRef.visibility = if (reflowMode) View.GONE else View.VISIBLE // só PDF Original, CBZ e CBR
-        openBtn.text = if (noDoc) "Toque aqui para Abrir: PDF, EPUB, DOCX, DOC, CBZ, CBR" else "Abrir"
+        openBtn.text = if (noDoc) "Toque aqui para Abrir: PDF, EPUB, DOCX, DOC, CBZ, CBR, CB7" else "Abrir"
         openBtn.maxLines = if (noDoc) 2 else 1
         openBtn.minHeight = openBtnMinH
         openBtn.minimumHeight = openBtnMinH
@@ -2353,7 +2353,8 @@ class MainActivity : AppCompatActivity() {
         // nome para exibir, sem a extensão .pdf
         val mime = try { contentResolver.getType(uri) } catch (_: Exception) { null }
         val lowName = (name ?: uri.lastPathSegment ?: "").lowercase()
-        docIsComic = lowName.endsWith(".cbz") || lowName.endsWith(".cbr") ||
+        docIsComic = lowName.endsWith(".cbz") || lowName.endsWith(".cbr") || lowName.endsWith(".cb7") ||
+            mime == "application/x-cb7" || mime == "application/x-7z-compressed" ||
             mime == "application/vnd.comicbook+zip" || mime == "application/vnd.comicbook-rar" ||
             mime == "application/x-cbz" || mime == "application/x-cbr"
         docIsEpub = !docIsComic && (mime == "application/epub+zip" ||
@@ -2363,7 +2364,7 @@ class MainActivity : AppCompatActivity() {
         docIsDoc = mime == "application/msword" ||
             (name ?: uri.lastPathSegment ?: "").lowercase().endsWith(".doc")
         if (docIsDoc) docIsDocx = true
-        currentName = (name ?: uri.lastPathSegment ?: "").replace(Regex("(?i)\\.(pdf|epub|docx|doc|cbz|cbr)$"), "")
+        currentName = (name ?: uri.lastPathSegment ?: "").replace(Regex("(?i)\\.(pdf|epub|docx|doc|cbz|cbr|cb7)$"), "")
         // o nome do PDF aparece na lista de apps recentes, para distinguir as janelas
         try { setTaskDescription(android.app.ActivityManager.TaskDescription(currentName)) } catch (_: Throwable) {}
         return "pg_" + (name ?: uri.toString()) + "|" + size
