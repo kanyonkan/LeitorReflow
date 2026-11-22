@@ -534,6 +534,9 @@ class MainActivity : AppCompatActivity() {
     private var downScrollX = 0
     private var turnAfterUp = 0
     private var snapAfterFling = false
+    private var dragAcc = 0 // quanto o dedo arrastou a lista neste gesto (sentido das páginas)
+    private var flingSeen = false
+    private var originPos = -1 // página que estava na tela quando o gesto começou
     private var snapStartOff = 0 // posição da página do topo/esquerda ao encostar o dedo (px)
     // Original + horizontal com zoom: quanto o dedo foi além da borda da página ampliada (px, com sinal)
     private var overAcc = 0f
@@ -779,6 +782,9 @@ class MainActivity : AppCompatActivity() {
             focusLock = -1
             resumeUi()
             snapStartOff = 0
+            dragAcc = 0
+            flingSeen = false
+            originPos = if (list.layoutManager != null) lm().findFirstVisibleItemPosition() else -1
             if (list.layoutManager != null && (list.adapter?.itemCount ?: 0) > 0) {
                 val v0 = lm().findViewByPosition(lm().findFirstVisibleItemPosition())
                 if (v0 != null) snapStartOff = if (isBook) v0.left else v0.top - list.paddingTop
@@ -821,6 +827,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val handled = super.dispatchTouchEvent(ev)
+        if (ev.actionMasked == MotionEvent.ACTION_UP && !flingSeen && isBook && !(!reflowMode && zoom > 1f) &&
+            dragAcc != 0 && list.layoutManager != null
+        ) {
+            // soltou o dedo devagar (sem deslize rápido): só vira a página se arrastou o bastante
+            if (abs(dragAcc) >= swipeNeeded()) snapToNearestPage() else returnToOrigin()
+        }
         if (turnAfterUp != 0 && ev.actionMasked == MotionEvent.ACTION_UP) {
             // deslize rápido: desfaz o pequeno deslocamento do arrasto e cancela a inércia,
             // para a próxima página entrar na mesma posição horizontal
@@ -1045,6 +1057,7 @@ class MainActivity : AppCompatActivity() {
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
                 updatePageIndicator()
+                if (rv.scrollState == RecyclerView.SCROLL_STATE_DRAGGING) dragAcc += if (isBook) dx else dy
             }
 
             override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
@@ -1526,6 +1539,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Ao fim de um deslize rápido, completa o rolamento até o começo da página mais próxima. */
+    /** Quanto o dedo precisa arrastar para trocar de página: 30% da largura (horizontal) ou 15% da altura (vertical). */
+    private fun swipeNeeded(): Float = if (isBook) list.width * 0.30f else list.height * 0.15f
+
+    /** Volta para a página em que o gesto começou (o arrasto foi curto demais para trocar). */
+    private fun returnToOrigin() {
+        val v = if (originPos >= 0) lm().findViewByPosition(originPos) else null
+        if (v == null) {
+            snapToNearestPage()
+            return
+        }
+        val dx = v.left
+        if (dx != 0) list.smoothScrollBy(dx, 0)
+    }
+
     private fun snapToNearestPage() {
         if (list.layoutManager == null || (list.adapter?.itemCount ?: 0) == 0) return
         if (isBook && !reflowMode && zoom > 1f) return
@@ -1767,6 +1794,13 @@ class MainActivity : AppCompatActivity() {
                 // quadrinhos com zoom, formato vertical: inércia nativa, igual à do deslize lateral
                 if (docIsComic && !isBook && zoom > 1f) {
                     comicFling(velocityY)
+                    return true
+                }
+                flingSeen = true
+                // movimento curto não troca de página: o deslize rápido só vale se o dedo andou o bastante
+                if (!(isBook && !reflowMode && zoom > 1f) && abs(dragAcc) < swipeNeeded()) {
+                    list.stopScroll()
+                    if (isBook) returnToOrigin()
                     return true
                 }
                 val v = if (isBook) velocityX else velocityY
