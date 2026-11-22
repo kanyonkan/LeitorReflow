@@ -1562,7 +1562,7 @@ class MainActivity : AppCompatActivity() {
         // a página final para na mesma posição em que a página inicial estava ao começar o deslize
         // (no horizontal as páginas ocupam a tela toda: a posição que vale é sempre a página encaixada,
         // senão uma parada anterior "entre duas páginas" seria repetida nas seguintes)
-        val off = if (isBook) 0 else snapStartOff
+        val off = 0 // a página que entra fica com o topo (ou a borda esquerda) alinhado à tela, como no toque lateral
         if (isBook) {
             val d1 = v.left - off
             val d2 = v.right - off
@@ -1737,6 +1737,7 @@ class MainActivity : AppCompatActivity() {
             override fun run() {
                 if (!sc.computeScrollOffset()) {
                     comicFlingRun = null
+                    comicFlingEnded(limit)
                     return
                 }
                 var y = sc.currY
@@ -1749,6 +1750,7 @@ class MainActivity : AppCompatActivity() {
                     list.scrollBy(0, d)
                     if (list.computeVerticalScrollOffset() == before) {
                         comicFlingRun = null
+                        comicFlingEnded(limit)
                         return
                     }
                 }
@@ -1761,6 +1763,12 @@ class MainActivity : AppCompatActivity() {
         }
         comicFlingRun = run
         list.postOnAnimation(run)
+    }
+
+    /** Fim da corrida dos quadrinhos com zoom (sem a trava): se passou de página, encaixa o topo da página na tela. */
+    private fun comicFlingEnded(limit: Int) {
+        if (limit != Int.MAX_VALUE || isBook) return
+        if (originPos >= 0 && lm().findFirstVisibleItemPosition() != originPos) snapToNearestPage()
     }
 
     private fun applySwipeLock() {
