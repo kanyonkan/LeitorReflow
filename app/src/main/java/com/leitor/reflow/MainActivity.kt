@@ -1569,7 +1569,7 @@ class MainActivity : AppCompatActivity() {
             val dx = if (abs(d1) <= abs(d2)) d1 else d2
             if (dx != 0) list.smoothScrollBy(dx, 0)
         } else {
-            val o = v.top - list.paddingTop
+            val o = v.top - pageTopY() // mesmo alvo do toque lateral (no Refluxo é o topo da tela, sem a margem da lista)
             val d1 = o - off
             val d2 = o + v.height - off
             val dy = if (abs(d1) <= abs(d2)) d1 else d2
