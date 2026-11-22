@@ -71,8 +71,18 @@ object ComicBook {
                 repack(src, work)
                 work
             }
-            is7z -> throw IllegalArgumentException("Arquivo 7z (CB7) não é suportado")
-            else -> throw IllegalArgumentException("Formato de quadrinhos não reconhecido (início $hex)")
+            is7z -> {
+                repack5(src, work)
+                work
+            }
+            else -> {
+                // formato não identificado pelo início (ex.: RAR com bytes extras antes, CB7 renomeado): tenta libarchive
+                try { repack5(src, work) } catch (e: Throwable) {
+                    Dbg.log("Formato desconhecido: ${e.javaClass.name}: ${e.message}")
+                    throw IllegalArgumentException("Formato de quadrinhos não reconhecido (início $hex)")
+                }
+                work
+            }
         }
         // nomes fora do padrão UTF-8 derrubam a leitura da lista de arquivos (MALFORMED): refaz com outra codificação
         var cs: java.nio.charset.Charset = Charsets.UTF_8
@@ -209,6 +219,13 @@ object ComicBook {
             throw e
         } catch (e: Throwable) {
             Dbg.log("CBR: ERRO ${e.javaClass.name}: ${e.message}\n${e.stackTrace.take(8).joinToString("\n")}")
+            try {
+                Dbg.log("CBR: tentando libarchive como alternativa")
+                repack5(rar, out)
+                return
+            } catch (e2: Throwable) {
+                Dbg.log("CBR: libarchive também falhou: ${e2.javaClass.name}: ${e2.message}")
+            }
             throw IllegalArgumentException("Não foi possível ler este CBR (arquivo corrompido ou formato RAR não suportado)")
         }
     }
