@@ -2058,21 +2058,34 @@ class MainActivity : AppCompatActivity() {
         Dbg.log("comicStepVertical: first=$first cur=$cur t=$t vpH=$vpH curTop=${cv?.top} curH=${cv?.height} range=$range frac=$frac scrollState=${list.scrollState} alignTarget=$alignTarget")
         if (t == cur) return
         val tv = lm().findViewByPosition(t)
-        if (tv == null) {
-            Dbg.log("  página destino não está na lista: turnTo($t)")
+        // a página vizinha costuma estar fora da tela (páginas altas com zoom): então não está na lista ainda.
+        // Calcula onde ela ficaria: altura pela proporção da imagem e o espaço de 6 dp entre as páginas
+        val sz = sizes.getOrNull(t)
+        val estH = if (sz != null && sz[0] > 0) (listWidth.toLong() * sz[1] / sz[0]).toInt() else 0
+        val gap = dp(6)
+        val tvTop: Int
+        val tvH: Int
+        if (tv != null) {
+            tvTop = tv.top
+            tvH = tv.height
+        } else if (cv != null && estH > 0) {
+            tvH = estH
+            tvTop = if (t > cur) cv.top + cv.height + gap else cv.top - gap - estH
+        } else {
+            Dbg.log("  sem como calcular o destino: turnTo($t)")
             turnTo(t)
             return
         }
-        val newRange = tv.height - vpH
+        val newRange = tvH - vpH
         val newOff = if (newRange > 0) (frac * newRange).toInt() else 0
-        Dbg.log("  destino: top=${tv.top} h=${tv.height} newRange=$newRange newOff=$newOff -> rola ${tv.top + newOff}")
+        Dbg.log("  destino: naLista=${tv != null} top=$tvTop h=$tvH newRange=$newRange newOff=$newOff -> rola ${tvTop + newOff}")
         for (d in longArrayOf(100, 300, 600, 1000)) list.postDelayed({
             val vv = lm().findViewByPosition(t)
             Dbg.log("  +${d}ms: topo da pág destino=${vv?.top} (alvo ${-newOff}) estado=${list.scrollState} alignTarget=$alignTarget snapAfterFling=$snapAfterFling")
         }, d)
         snapAfterFling = false
         alignTarget = -1
-        list.smoothScrollBy(0, tv.top + newOff, null, 140)
+        list.smoothScrollBy(0, tvTop + newOff, null, 140)
         list.postDelayed({
             if (list.scrollState != RecyclerView.SCROLL_STATE_IDLE) return@postDelayed
             val v2 = lm().findViewByPosition(t)
