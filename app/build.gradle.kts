@@ -42,4 +42,5 @@ dependencies {
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("org.jsoup:jsoup:1.17.2")
     implementation("com.github.junrar:junrar:7.5.5")
+    implementation("me.zhanghai.android.libarchive:library:1.1.6")
 }

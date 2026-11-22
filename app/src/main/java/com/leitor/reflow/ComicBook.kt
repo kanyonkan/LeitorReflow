@@ -132,8 +132,60 @@ object ComicBook {
         return Pair(names, total)
     }
 
+    private fun isRar5(f: File): Boolean {
+        val h = ByteArray(8)
+        val n = f.inputStream().use { it.read(h) }
+        return n == 8 && h[3] == 0x21.toByte() && h[4] == 0x1A.toByte() && h[5] == 0x07.toByte() && h[6] == 0x01.toByte()
+    }
+
+    private fun repack5(rar: File, out: File) {
+        val arc = me.zhanghai.android.libarchive.Archive.readNew()
+        try {
+            me.zhanghai.android.libarchive.Archive.readSupportFilterAll(arc)
+            me.zhanghai.android.libarchive.Archive.readSupportFormatAll(arc)
+            android.os.ParcelFileDescriptor.open(rar, android.os.ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                me.zhanghai.android.libarchive.Archive.readOpenFd(arc, pfd.fd, 65536)
+                val buf = java.nio.ByteBuffer.allocateDirect(65536)
+                val tmp = ByteArray(65536)
+                ZipOutputStream(out.outputStream().buffered()).use { zos ->
+                    zos.setLevel(0)
+                    val used = HashSet<String>()
+                    var first = true
+                    var e = me.zhanghai.android.libarchive.Archive.readNextHeader(arc)
+                    while (e != 0L) {
+                        val name = (me.zhanghai.android.libarchive.ArchiveEntry.pathnameUtf8(e)
+                            ?: me.zhanghai.android.libarchive.ArchiveEntry.pathname(e) ?: "").replace('\\', '/')
+                        val size = me.zhanghai.android.libarchive.ArchiveEntry.stat(e).stSize
+                        if (size > 0 && isImage(name) && used.add(name)) {
+                            zos.putNextEntry(ZipEntry(name))
+                            var total = 0L
+                            while (total < size) {
+                                buf.clear()
+                                me.zhanghai.android.libarchive.Archive.readData(arc, buf)
+                                val n = if (buf.position() > 0) buf.position()
+                                else if (buf.limit() < buf.capacity()) buf.limit() else 0
+                                if (first) { Dbg.log("RAR5: primeira leitura n=$n pos=${buf.position()} lim=${buf.limit()} tam=$size"); first = false }
+                                if (n <= 0) break
+                                buf.flip().let { if (it.limit() == 0) { buf.limit(n); buf.position(0) } }
+                                buf.get(tmp, 0, n)
+                                zos.write(tmp, 0, n)
+                                total += n
+                            }
+                            zos.closeEntry()
+                        }
+                        e = me.zhanghai.android.libarchive.Archive.readNextHeader(arc)
+                    }
+                }
+            }
+        } finally {
+            try { me.zhanghai.android.libarchive.Archive.readClose(arc) } catch (_: Throwable) {}
+            try { me.zhanghai.android.libarchive.Archive.free(arc) } catch (_: Throwable) {}
+        }
+    }
+
     private fun repack(rar: File, out: File) {
         try {
+            if (isRar5(rar)) { Dbg.log("CBR: RAR5, usando libarchive"); repack5(rar, out); return }
             Archive(rar).use { arc ->
                 if (arc.mainHeader.isEncrypted) throw IllegalArgumentException("Arquivo protegido por senha")
                 ZipOutputStream(out.outputStream().buffered()).use { zos ->
@@ -158,7 +210,7 @@ object ComicBook {
             throw e
         } catch (e: Throwable) {
             Dbg.log("CBR: ERRO ${e.javaClass.name}: ${e.message}\n${e.stackTrace.take(8).joinToString("\n")}")
-            throw IllegalArgumentException("Não foi possível ler este CBR (o formato RAR5 não é suportado)")
+            throw IllegalArgumentException("Não foi possível ler este CBR (arquivo corrompido ou formato RAR não suportado)")
         }
     }
 }
