@@ -61,7 +61,6 @@ object ComicBook {
         val head = ByteArray(8)
         val got = src.inputStream().use { it.read(head) }
         val hex = head.take(maxOf(got, 0)).joinToString(" ") { "%02X".format(it) }
-        Dbg.log("CBZ/CBR: tamanho=${src.length()} bytes, início=$hex")
         val isZip = head[0] == 0x50.toByte() && head[1] == 0x4B.toByte()
         val isRar = head[0] == 0x52.toByte() && head[1] == 0x61.toByte() && head[2] == 0x72.toByte()
         val is7z = head[0] == 0x37.toByte() && head[1] == 0x7A.toByte() && head[2] == 0xBC.toByte()
@@ -78,7 +77,6 @@ object ComicBook {
             else -> {
                 // formato não identificado pelo início (ex.: RAR com bytes extras antes, CB7 renomeado): tenta libarchive
                 try { repack5(src, work) } catch (e: Throwable) {
-                    Dbg.log("Formato desconhecido: ${e.javaClass.name}: ${e.message}")
                     throw IllegalArgumentException("Formato de quadrinhos não reconhecido (início $hex)")
                 }
                 work
@@ -173,7 +171,6 @@ object ComicBook {
                                 me.zhanghai.android.libarchive.Archive.readData(arc, buf)
                                 val n = if (buf.position() > 0) buf.position()
                                 else if (buf.limit() < buf.capacity()) buf.limit() else 0
-                                if (first) { Dbg.log("RAR5: primeira leitura n=$n pos=${buf.position()} lim=${buf.limit()} tam=$size"); first = false }
                                 if (n <= 0) break
                                 buf.flip().let { if (it.limit() == 0) { buf.limit(n); buf.position(0) } }
                                 buf.get(tmp, 0, n)
@@ -194,7 +191,7 @@ object ComicBook {
 
     private fun repack(rar: File, out: File) {
         try {
-            if (isRar5(rar)) { Dbg.log("CBR: RAR5, usando libarchive"); repack5(rar, out); return }
+            if (isRar5(rar)) { repack5(rar, out); return }
             Archive(rar).use { arc ->
                 if (arc.mainHeader.isEncrypted) throw IllegalArgumentException("Arquivo protegido por senha")
                 ZipOutputStream(out.outputStream().buffered()).use { zos ->
@@ -215,16 +212,12 @@ object ComicBook {
                 }
             }
         } catch (e: IllegalArgumentException) {
-            Dbg.log("CBR: erro de aplicativo: ${e.message}")
             throw e
         } catch (e: Throwable) {
-            Dbg.log("CBR: ERRO ${e.javaClass.name}: ${e.message}\n${e.stackTrace.take(8).joinToString("\n")}")
             try {
-                Dbg.log("CBR: tentando libarchive como alternativa")
                 repack5(rar, out)
                 return
             } catch (e2: Throwable) {
-                Dbg.log("CBR: libarchive também falhou: ${e2.javaClass.name}: ${e2.message}")
             }
             throw IllegalArgumentException("Não foi possível ler este CBR (arquivo corrompido ou formato RAR não suportado)")
         }

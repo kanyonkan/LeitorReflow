@@ -141,22 +141,6 @@ class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
     }
 }
 
-/** REGISTRO DE TESTE TEMPORÁRIO (versão de teste): anota rolagem, inércia, quadros lentos e leitura de imagens dos quadrinhos. */
-object Dbg {
-    private val sb = StringBuilder()
-    private val fmt = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
-    @Volatile var on = false
-
-    @Synchronized fun log(m: String) {
-        if (!on) return
-        sb.append(fmt.format(java.util.Date())).append(' ').append(m).append('\n')
-        if (sb.length > 120000) sb.delete(0, sb.length - 90000)
-    }
-
-    @Synchronized fun text(): String = sb.toString()
-    @Synchronized fun clear() = sb.setLength(0)
-}
-
 /** LinearLayoutManager que permite travar a rolagem lateral feita com o dedo. */
 class PagerLayoutManager(context: Context, orientation: Int) :
     LinearLayoutManager(context, orientation, false) {
@@ -1097,7 +1081,6 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
-                if (Dbg.on) Dbg.log("estadoRolagem=$newState snapAfterFling=$snapAfterFling alignTarget=$alignTarget")
                 if (newState == RecyclerView.SCROLL_STATE_IDLE) {
                     updatePageIndicator()
                     // terminou uma corrida por deslize rápido: encaixa na página mais próxima
@@ -1182,30 +1165,6 @@ class MainActivity : AppCompatActivity() {
         row2Lp.topMargin = dp(2)
         bar.addView(row2, row2Lp)
         rowTwo = row2
-
-        // --- VERSÃO DE TESTE: registro de rolagem (toque = copiar, segurar = limpar) ---
-        val dbgBtn = makeBtn("Registro (teste): toque = copiar, segurar = limpar") {
-            dbgConfig("copiar")
-            val head = "LeitorReflow registro de teste | ${android.os.Build.MODEL} | Android ${android.os.Build.VERSION.RELEASE}\n"
-            val txt = head + Dbg.text()
-            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                .setPrimaryClip(ClipData.newPlainText("registro", txt))
-            Toast.makeText(this, "Registro copiado (${txt.count { it == '\n' }} linhas). Cole no chat.", Toast.LENGTH_LONG).show()
-        }
-        dbgBtn.setOnLongClickListener {
-            Dbg.clear()
-            dbgConfig("limpo")
-            Toast.makeText(this, "Registro limpo.", Toast.LENGTH_SHORT).show()
-            true
-        }
-        Dbg.on = true
-        val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row3.addView(dbgBtn)
-        val row3Lp = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-        row3Lp.topMargin = dp(2)
-        bar.addView(row3, row3Lp)
 
         status = TextView(this).apply {
             text = "Toque em Abrir e escolha um PDF, DOC, DOCX, EPUB, CBZ ou CBR."
@@ -1615,7 +1574,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun snapToNearestPage() {
-        Dbg.log("snapToNearestPage")
         if (list.layoutManager == null || (list.adapter?.itemCount ?: 0) == 0) return
         if (isBook && !reflowMode && zoom > 1f) return
         val first = lm().findFirstVisibleItemPosition()
@@ -1840,13 +1798,6 @@ class MainActivity : AppCompatActivity() {
         if (originPos >= 0 && lm().findFirstVisibleItemPosition() != originPos) snapToNearestPage()
     }
 
-    private fun dbgConfig(why: String) {
-        if (!Dbg.on) return
-        val dm = resources.displayMetrics
-        Dbg.log("CONFIG($why) tela=${dm.widthPixels}x${dm.heightPixels} dens=${dm.density} zoom=$zoom isBook=$isBook reflow=$reflowMode comic=$docIsComic " +
-            "listW=$listWidth listH=${list.height} padTop=${list.paddingTop} padBot=${list.paddingBottom} scrollX=${hScroll.scrollX} pagina=${currentPage()} paginas=${sizes.size}")
-    }
-
     private fun applySwipeLock() {
         (list.layoutManager as? PagerLayoutManager)?.swipeLock = swipeLock && docIsComic
     }
@@ -1881,7 +1832,6 @@ class MainActivity : AppCompatActivity() {
                     return true
                 }
                 flingSeen = true
-                Dbg.log("FLING vx=$velocityX vy=$velocityY dragAcc=$dragAcc needed=${swipeNeeded()}")
                 // movimento curto não troca de página: o deslize rápido só vale se o dedo andou o bastante
                 if (!(isBook && !reflowMode && zoom > 1f) && abs(dragAcc) < swipeNeeded()) {
                     list.stopScroll()
@@ -2028,7 +1978,6 @@ class MainActivity : AppCompatActivity() {
     private fun pageTopY(): Int = if (reflowMode) 0 else list.paddingTop
 
     private fun turnTo(t: Int) {
-        Dbg.log("turnTo($t)")
         val off = if (isBook) 0 else pageTopY() - list.paddingTop
         lm().scrollToPositionWithOffset(t, off)
         // confere uma vez: se a lista ficou parada fora da página, repete o pedido
@@ -2055,7 +2004,6 @@ class MainActivity : AppCompatActivity() {
         val range = if (cv != null) cv.height - vpH else 0
         val frac = if (cv != null && range > 0) ((0 - cv.top).toFloat() / range).coerceIn(0f, 1f) else 0f
         val t = (cur + delta).coerceIn(0, count - 1)
-        Dbg.log("comicStepVertical: first=$first cur=$cur t=$t vpH=$vpH curTop=${cv?.top} curH=${cv?.height} range=$range frac=$frac scrollState=${list.scrollState} alignTarget=$alignTarget")
         if (t == cur) return
         val tv = lm().findViewByPosition(t)
         // a página vizinha costuma estar fora da tela (páginas altas com zoom): então não está na lista ainda.
@@ -2072,24 +2020,17 @@ class MainActivity : AppCompatActivity() {
             tvH = estH
             tvTop = if (t > cur) cv.top + cv.height + gap else cv.top - gap - estH
         } else {
-            Dbg.log("  sem como calcular o destino: turnTo($t)")
             turnTo(t)
             return
         }
         val newRange = tvH - vpH
         val newOff = if (newRange > 0) (frac * newRange).toInt() else 0
-        Dbg.log("  destino: naLista=${tv != null} top=$tvTop h=$tvH newRange=$newRange newOff=$newOff -> rola ${tvTop + newOff}")
-        for (d in longArrayOf(100, 300, 600, 1000)) list.postDelayed({
-            val vv = lm().findViewByPosition(t)
-            Dbg.log("  +${d}ms: topo da pág destino=${vv?.top} (alvo ${-newOff}) estado=${list.scrollState} alignTarget=$alignTarget snapAfterFling=$snapAfterFling")
-        }, d)
         snapAfterFling = false
         alignTarget = -1
         list.smoothScrollBy(0, tvTop + newOff, null, 140)
         list.postDelayed({
             if (list.scrollState != RecyclerView.SCROLL_STATE_IDLE) return@postDelayed
             val v2 = lm().findViewByPosition(t)
-            Dbg.log("  conferência 450ms: v2.top=${v2?.top} newOff=$newOff")
             if (v2 == null) {
                 lm().scrollToPositionWithOffset(t, -newOff - list.paddingTop)
             } else {
@@ -2120,7 +2061,6 @@ class MainActivity : AppCompatActivity() {
     private fun pageStep(delta: Int) {
         val count = list.adapter?.itemCount ?: 0
         if (count == 0) return
-        dbgConfig("toque lateral delta=$delta")
         if (!isBook && !reflowMode && zoom > 1f) { // Original (PDF e quadrinhos) com zoom
             comicStepVertical(delta, count)
             return
@@ -2342,7 +2282,6 @@ class MainActivity : AppCompatActivity() {
 
     /** Deixa o começo da página [t] exatamente no começo da tela (esquerda no horizontal, topo no vertical). */
     private fun alignToPage(t: Int) {
-        Dbg.log("alignToPage($t)")
         alignTarget = -1
         if (t < 0 || (list.adapter?.itemCount ?: 0) <= t) return
         val tv = lm().findViewByPosition(t)
@@ -2989,7 +2928,6 @@ class MainActivity : AppCompatActivity() {
                     updatePageIndicator()
                 }
             } catch (e: Throwable) {
-                Dbg.log("ERRO ao abrir quadrinhos: ${e.javaClass.name}: ${e.message}\n${e.stackTrace.take(8).joinToString("\n")}")
                 main.post {
                     if (token != loadToken) return@post
                     status.text = "Não foi possível abrir o arquivo."
