@@ -153,8 +153,7 @@ object ComicBook {
                     var first = true
                     var e = me.zhanghai.android.libarchive.Archive.readNextHeader(arc)
                     while (e != 0L) {
-                        val name = (me.zhanghai.android.libarchive.ArchiveEntry.pathnameUtf8(e)
-                            ?: me.zhanghai.android.libarchive.ArchiveEntry.pathname(e) ?: "").replace('\\', '/')
+                        val name: String = (me.zhanghai.android.libarchive.ArchiveEntry.pathnameUtf8(e) ?: "").replace('\\', '/')
                         val size = me.zhanghai.android.libarchive.ArchiveEntry.stat(e).stSize
                         if (size > 0 && isImage(name) && used.add(name)) {
                             zos.putNextEntry(ZipEntry(name))
