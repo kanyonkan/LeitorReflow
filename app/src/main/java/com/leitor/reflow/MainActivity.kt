@@ -1008,8 +1008,11 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val pt = kotlin.math.floor((stripS + w / 2f) / l).toInt().coerceIn(0, n - 1)
-        val target = pt * l + ((l - w) / 2f).coerceAtLeast(0f)
+        // trocou de página pelo deslize: o canto superior esquerdo da página vai ao canto superior esquerdo da tela
+        val changed = originPos >= 0 && pt != originPos
+        val target = if (changed) pt * l else pt * l + ((l - w) / 2f).coerceAtLeast(0f)
         runStripAnim(stripS, target, 160L, android.view.animation.DecelerateInterpolator()) {
+            if (changed) (lm().findViewByPosition(pt) as? ScrollView)?.scrollTo(0, 0)
             updatePageIndicator()
             saveCenter()
         }
@@ -1569,9 +1572,16 @@ class MainActivity : AppCompatActivity() {
             val dx = if (abs(d1) <= abs(d2)) d1 else d2
             if (dx != 0) list.smoothScrollBy(dx, 0)
         } else {
-            val o = v.top - pageTopY() // mesmo alvo do toque lateral (no Refluxo é o topo da tela, sem a margem da lista)
+            // com zoom (Original/quadrinhos) o canto superior da página vai ao canto superior da tela:
+            // topo em y = 0 (sem a margem da lista) e rolagem lateral no começo
+            val zoomed = !reflowMode && zoom > 1f
+            val o = v.top - (if (zoomed) 0 else pageTopY()) // senão: mesmo alvo do toque lateral
+            if (zoomed) hScroll.smoothScrollTo(0, 0)
+            val target = if (zoomed) 0 else pageTopY()
+            val nv = lm().findViewByPosition(first + 1)
             val d1 = o - off
-            val d2 = o + v.height - off
+            // topo da próxima página (com o espaço entre as páginas, que a altura sozinha não inclui)
+            val d2 = if (nv != null) nv.top - target - off else o + v.height - off
             val dy = if (abs(d1) <= abs(d2)) d1 else d2
             if (dy != 0) list.smoothScrollBy(0, dy)
         }
@@ -2048,7 +2058,7 @@ class MainActivity : AppCompatActivity() {
         cur = cur.coerceIn(0, count - 1)
         val t = (cur + delta).coerceIn(0, count - 1)
         if (t == cur) return
-        if (docIsComic && zoom > 1f) keepBookVerticalPos(cur, t)
+        if ((docIsComic || !reflowMode) && zoom > 1f) keepBookVerticalPos(cur, t)
         val first = lm().findFirstVisibleItemPosition()
         val v0 = lm().findViewByPosition(first)
         if (v0 != null) {
