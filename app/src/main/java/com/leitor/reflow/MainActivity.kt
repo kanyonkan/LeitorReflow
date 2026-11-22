@@ -855,6 +855,7 @@ class MainActivity : AppCompatActivity() {
     private var stripS = 0f
     private var stripVt: android.view.VelocityTracker? = null
     private var stripAnim: android.animation.ValueAnimator? = null
+    private var stripStartPage = -1 // página no meio da tela quando o gesto começou
 
     /**
      * Com zoom no formato horizontal, as páginas formam uma faixa contínua: o arrasto anda dentro da
@@ -870,6 +871,11 @@ class MainActivity : AppCompatActivity() {
                 stripAnim = null
                 stripActive = false
                 stripTracking = !selDragging
+                stripStartPage = run {
+                    val s0 = currentStrip()
+                    val l0 = list.width.toFloat()
+                    if (s0 == null || l0 <= 0f) -1 else kotlin.math.floor((s0 + hScroll.width / 2f) / l0).toInt()
+                }
                 stripDownX = ev.x
                 stripDownY = ev.y
                 stripVt?.recycle()
@@ -1002,20 +1008,31 @@ class MainActivity : AppCompatActivity() {
         val w = hScroll.width.toFloat()
         val p = kotlin.math.floor(stripS / l).toInt().coerceIn(0, n - 1)
         val straddle = stripS + w > (p + 1) * l + 1f && p < n - 1
-        if (!straddle) {
+        val pt = kotlin.math.floor((stripS + w / 2f) / l).toInt().coerceIn(0, n - 1)
+        // trocou de página pelo deslize (mesmo parando dentro da página nova, sem cruzar duas):
+        // o canto superior esquerdo da página vai ao canto superior esquerdo da tela
+        val changed = stripStartPage >= 0 && pt != stripStartPage
+        if (!changed && !straddle) {
             updatePageIndicator()
             saveCenter()
             return
         }
-        val pt = kotlin.math.floor((stripS + w / 2f) / l).toInt().coerceIn(0, n - 1)
-        // trocou de página pelo deslize: o canto superior esquerdo da página vai ao canto superior esquerdo da tela
-        val changed = originPos >= 0 && pt != originPos
         val target = if (changed) pt * l else pt * l + ((l - w) / 2f).coerceAtLeast(0f)
-        runStripAnim(stripS, target, 160L, android.view.animation.DecelerateInterpolator()) {
-            if (changed) (lm().findViewByPosition(pt) as? ScrollView)?.scrollTo(0, 0)
+        val finish = {
+            if (changed) {
+                stripStartPage = pt
+                // a página pode ainda não estar na lista: repete até o topo da rolagem vertical dela zerar
+                for (d in longArrayOf(0, 80, 200, 450)) {
+                    list.postDelayed({
+                        (lm().findViewByPosition(pt) as? ScrollView)?.scrollTo(0, 0)
+                    }, d)
+                }
+            }
             updatePageIndicator()
             saveCenter()
         }
+        if (abs(stripS - target) < 1f) finish() else
+            runStripAnim(stripS, target, 160L, android.view.animation.DecelerateInterpolator()) { finish() }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -1977,13 +1994,15 @@ class MainActivity : AppCompatActivity() {
      * posição relativa (topo, meio, base…) da que saiu.
      */
     private fun comicStepVertical(delta: Int, count: Int) {
-        val vpH = list.height - list.paddingTop - list.paddingBottom
+        // referência: o topo da tela (y = 0), o mesmo alvo do encaixe após o deslize; a posição relativa
+        // dentro da página (0 = topo ... 1 = base) é levada para a página que entra
+        val vpH = list.height
         val first = lm().findFirstVisibleItemPosition().coerceAtLeast(0)
         val fv = lm().findViewByPosition(first)
         val cur = (if (fv != null && fv.bottom < list.height * 0.25f) first + 1 else first).coerceIn(0, count - 1)
         val cv = lm().findViewByPosition(cur)
         val range = if (cv != null) cv.height - vpH else 0
-        val frac = if (cv != null && range > 0) ((pageTopY() - cv.top).toFloat() / range).coerceIn(0f, 1f) else 0f
+        val frac = if (cv != null && range > 0) ((0 - cv.top).toFloat() / range).coerceIn(0f, 1f) else 0f
         val t = (cur + delta).coerceIn(0, count - 1)
         if (t == cur) return
         val tv = lm().findViewByPosition(t)
@@ -1995,14 +2014,14 @@ class MainActivity : AppCompatActivity() {
         val newOff = if (newRange > 0) (frac * newRange).toInt() else 0
         snapAfterFling = false
         alignTarget = -1
-        list.smoothScrollBy(0, tv.top - pageTopY() + newOff, null, 140)
+        list.smoothScrollBy(0, tv.top + newOff, null, 140)
         list.postDelayed({
             if (list.scrollState != RecyclerView.SCROLL_STATE_IDLE) return@postDelayed
             val v2 = lm().findViewByPosition(t)
             if (v2 == null) {
-                lm().scrollToPositionWithOffset(t, -newOff)
+                lm().scrollToPositionWithOffset(t, -newOff - list.paddingTop)
             } else {
-                val d = v2.top - (pageTopY() - newOff)
+                val d = v2.top + newOff
                 if (abs(d) > 1) list.scrollBy(0, d)
             }
         }, 450)
@@ -2029,7 +2048,7 @@ class MainActivity : AppCompatActivity() {
     private fun pageStep(delta: Int) {
         val count = list.adapter?.itemCount ?: 0
         if (count == 0) return
-        if (!isBook && docIsComic && zoom > 1f) {
+        if (!isBook && !reflowMode && zoom > 1f) { // Original (PDF e quadrinhos) com zoom
             comicStepVertical(delta, count)
             return
         }
