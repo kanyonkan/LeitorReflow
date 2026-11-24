@@ -1000,7 +1000,7 @@ class MainActivity : AppCompatActivity() {
         a.start()
     }
 
-    /** Parou entre duas páginas: encaixa na mais próxima, com a página centralizada (mesmo zoom). */
+    /** Parou entre duas páginas: encaixa na mais próxima, alinhada à borda da tela (mesmo zoom). */
     private fun snapStrip() {
         val n = list.adapter?.itemCount ?: 0
         if (n == 0 || list.width <= 0) return
@@ -1017,7 +1017,13 @@ class MainActivity : AppCompatActivity() {
             saveCenter()
             return
         }
-        val target = if (changed) pt * l else pt * l + ((l - w) / 2f).coerceAtLeast(0f)
+        // sem trocar de página e com zoom: volta à borda da página (direita ou esquerda) em vez de centralizar,
+        // para a borda lateral da página não ficar recuada em relação à borda da tela
+        val target = when {
+            changed -> pt * l
+            l > w + 1f -> if (pt == p) p * l + (l - w) else pt * l
+            else -> pt * l + ((l - w) / 2f).coerceAtLeast(0f)
+        }
         val finish = {
             if (changed) {
                 stripStartPage = pt
