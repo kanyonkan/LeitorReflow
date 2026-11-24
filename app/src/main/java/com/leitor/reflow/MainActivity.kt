@@ -554,6 +554,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pageIndicator: TextView
     private lateinit var loadIndicator: TextView
     private lateinit var indBox: LinearLayout
+    private var origScanUri: Uri? = null // PDF cujo tamanho de todas as páginas (modo Original) já foi medido
+    private var origScanSizes: ArrayList<IntArray>? = null
     @Volatile private var loadPct = -1 // progresso do carregamento do arquivo (0..99 visível; <0 ou >=100 escondido)
     private lateinit var modeBtn: Button
     private lateinit var openBtn: Button
@@ -677,12 +679,13 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                // dois toques rápidos no centro: alterna entre Original e Refluxo
+                // dois toques rápidos no centro: PDF alterna entre Original e Refluxo; demais formatos sobem o zoom
                 if (currentUri == null || overOverlay(e)) return false
                 val w = root.width
                 val h = root.height
                 if (e.x > w * 0.25f && e.x < w * 0.75f && e.y > h * TAP_TOP && e.y < h * TAP_BOTTOM) {
-                    toggleMode()
+                    // formatos sem modo Original/Refluxo (quadrinhos, EPUB, DOC, DOCX): dois toques aumentam o zoom um nível
+                    if (docIsComic || docIsEpub || docIsDocx) changeSize(+1) else toggleMode()
                     return true
                 }
                 return false
@@ -1942,7 +1945,7 @@ class MainActivity : AppCompatActivity() {
     private fun refreshLoadIndicator() {
         val pct = loadPct
         if (pct in 0..99 && barVisible) {
-            loadIndicator.text = "Carregando… $pct%"
+            loadIndicator.text = if (reflowMode && !docIsEpub && !docIsDocx && !docIsComic) "Carregando Refluxo $pct%" else "Carregando… $pct%"
             loadIndicator.visibility = View.VISIBLE
         } else {
             loadIndicator.visibility = View.GONE
@@ -2596,7 +2599,7 @@ class MainActivity : AppCompatActivity() {
     private fun show() {
         val uri = currentUri ?: return
         val token = ++loadToken
-        loadPct = 0
+        loadPct = -1
         refreshLoadIndicator()
         clearSelection()
         closeRenderer()
@@ -2648,6 +2651,9 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 // 2) extração: começa pela página atual e depois completa o resto
+                // (com o documento já aberto, não há cópia: a extração usa a barra inteira)
+                val base = if (synchronized(docLock) { sharedDoc != null && sharedDocUri == uri }) 0 else 30
+                setLoad(token, 0)
                 val stripper = LinkStripper().apply { sortByPosition = true }
                 val targets = ArrayList<LinkTarget>()
                 // abre já: o número de páginas vem do leitor nativo (rápido), enquanto o arquivo é copiado e analisado
@@ -2735,7 +2741,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         status.text = if (d < total) "Carregando… $d de $total páginas"
                         else "$total páginas · refluxo"
-                        loadPct = if (d >= total) -1 else 30 + (70L * d / total).toInt()
+                        loadPct = if (d >= total) -1 else base + ((100 - base) * d.toLong() / total).toInt()
                         refreshLoadIndicator()
                         if (d >= total) resumeUi()
                         if (d == total) {
@@ -2790,6 +2796,7 @@ class MainActivity : AppCompatActivity() {
         Thread {
             try {
                 // copia o EPUB para um arquivo: o zip precisa de acesso direto para ler as figuras
+                setLoad(token, 0)
                 val old = epubZip
                 epubZip = null
                 try { old?.close() } catch (_: Throwable) {}
@@ -2934,6 +2941,32 @@ class MainActivity : AppCompatActivity() {
                 val count = r.pageCount
                 if (count == 0) throw IllegalStateException("PDF sem páginas")
 
+                val cachedSizes = if (origScanUri == uri) origScanSizes else null
+                if (cachedSizes != null && cachedSizes.size == count) {
+                    // este PDF já foi todo medido numa abertura anterior: abre direto, sem novo carregamento
+                    main.post {
+                        if (token != loadToken) {
+                            synchronized(rendererLock) {
+                                try { r.close() } catch (_: Throwable) {}
+                            }
+                            try { f.close() } catch (_: Throwable) {}
+                            return@post
+                        }
+                        synchronized(rendererLock) {
+                            renderer = r
+                            renderFd = f
+                        }
+                        sizes.addAll(cachedSizes)
+                        imageAdapter.notifyDataSetChanged()
+                        status.text = "$count páginas · original"
+                        loadPct = -1
+                        restorePending()
+                        pendingPage = -1
+                        updatePageIndicator()
+                    }
+                    return@Thread
+                }
+
                 // só a primeira página é medida agora: as demais começam com o mesmo tamanho
                 // e são corrigidas em segundo plano (assim a leitura começa na hora)
                 val p0 = r.openPage(0)
@@ -2989,6 +3022,13 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
                     }
+                    main.post {
+                        if (token != loadToken) return@post
+                        origScanUri = uri
+                        origScanSizes = ArrayList(sizes)
+                        loadPct = -1
+                        refreshLoadIndicator()
+                    }
                 } catch (_: Throwable) {
                 }
             } catch (e: Throwable) {
@@ -3014,6 +3054,7 @@ class MainActivity : AppCompatActivity() {
         status.text = "Abrindo…"
         Thread {
             try {
+                setLoad(token, 0)
                 val old = epubZip
                 epubZip = null
                 try { old?.close() } catch (_: Throwable) {}
