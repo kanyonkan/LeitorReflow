@@ -552,6 +552,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var bar: LinearLayout
     private lateinit var status: TextView
     private lateinit var pageIndicator: TextView
+    private lateinit var loadIndicator: TextView
+    private lateinit var indBox: LinearLayout
+    @Volatile private var loadPct = -1 // progresso do carregamento do arquivo (0..99 visível; <0 ou >=100 escondido)
     private lateinit var modeBtn: Button
     private lateinit var openBtn: Button
     private lateinit var themeBtn: Button
@@ -696,7 +699,7 @@ class MainActivity : AppCompatActivity() {
     /** O toque caiu sobre o menu, o número da página ou a barra de seleção: não é toque na página. */
     private fun overOverlay(e: MotionEvent): Boolean {
         val loc = IntArray(2)
-        for (v in listOf<View>(bar, pageIndicator, selBar)) {
+        for (v in listOf<View>(bar, pageIndicator, loadIndicator, selBar)) {
             if (v.visibility != View.VISIBLE || v.width == 0) continue
             v.getLocationOnScreen(loc)
             if (e.rawX >= loc[0] && e.rawX <= loc[0] + v.width &&
@@ -1203,13 +1206,33 @@ class MainActivity : AppCompatActivity() {
             }
             visibility = View.GONE
         }
+        // indicador de carregamento do arquivo: centralizado e colado acima do número da página
+        loadIndicator = TextView(this).apply {
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(5), dp(12), dp(5))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#B3000000"))
+                cornerRadius = dp(14).toFloat()
+            }
+            visibility = View.GONE
+        }
+        indBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        indBox.addView(loadIndicator, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        indBox.addView(pageIndicator, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         val indLp = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
         )
         indLp.bottomMargin = dp(14)
-        root.addView(pageIndicator, indLp)
+        root.addView(indBox, indLp)
         pageIndicator.setOnClickListener { showGoToDialog() } // toque no número: ir para a página
 
         // barra da seleção de texto (modo Original)
@@ -1255,8 +1278,8 @@ class MainActivity : AppCompatActivity() {
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
             )
             bar.setPadding(dp(6) + sb.left, sb.top + dp(4), dp(6) + sb.right, dp(4))
-            (pageIndicator.layoutParams as FrameLayout.LayoutParams).bottomMargin = sb.bottom + dp(12)
-            pageIndicator.requestLayout()
+            (indBox.layoutParams as FrameLayout.LayoutParams).bottomMargin = sb.bottom + dp(12)
+            indBox.requestLayout()
             (selBar.layoutParams as FrameLayout.LayoutParams).bottomMargin = sb.bottom + dp(58)
             selBar.requestLayout()
             insets
@@ -1915,7 +1938,57 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var reflowFocus = 0 // página em que o usuário está (prioridade do processamento)
     @Volatile private var focusLock = -1 // durante um salto: processa em volta da página de destino
 
+    /** Mostra/esconde o indicador de carregamento: só com o menu visível e enquanto não chegou a 100%. */
+    private fun refreshLoadIndicator() {
+        val pct = loadPct
+        if (pct in 0..99 && barVisible) {
+            loadIndicator.text = "Carregando… $pct%"
+            loadIndicator.visibility = View.VISIBLE
+        } else {
+            loadIndicator.visibility = View.GONE
+        }
+    }
+
+    /** Atualiza o progresso do carregamento (pode ser chamado de qualquer thread). */
+    private fun setLoad(token: Int, pct: Int) {
+        main.post {
+            if (token != loadToken) return@post
+            val v = pct.coerceAtMost(100)
+            if (v == loadPct) return@post
+            loadPct = v
+            refreshLoadIndicator()
+        }
+    }
+
+    /** Copia o arquivo escolhido para [dest], informando o progresso entre [lo] e [hi] por cento. */
+    private fun copyUri(uri: Uri, dest: File, token: Int, lo: Int, hi: Int) {
+        val total = try {
+            contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+        } catch (_: Throwable) { -1L }
+        val ins = contentResolver.openInputStream(uri) ?: throw IllegalStateException("Não foi possível ler o arquivo")
+        ins.use { input ->
+            dest.outputStream().use { out ->
+                val buf = ByteArray(256 * 1024)
+                var done = 0L
+                var last = -1
+                while (true) {
+                    if (token != loadToken) throw java.util.concurrent.CancellationException()
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    done += n
+                    if (total > 0) {
+                        val pct = lo + ((hi - lo) * done / total).toInt()
+                        if (pct != last) { last = pct; setLoad(token, pct) }
+                    }
+                }
+            }
+        }
+        setLoad(token, hi)
+    }
+
     private fun updatePageIndicator() {
+        refreshLoadIndicator()
         schedulePageSave()
         if (reflowMode && !pagesComplete && focusLock < 0 && (list.adapter?.itemCount ?: 0) > 0) reflowFocus = pageToSave()
         val n = list.adapter?.itemCount ?: 0
@@ -2523,6 +2596,8 @@ class MainActivity : AppCompatActivity() {
     private fun show() {
         val uri = currentUri ?: return
         val token = ++loadToken
+        loadPct = 0
+        refreshLoadIndicator()
         clearSelection()
         closeRenderer()
         if (docIsComic) showComic(uri, token)
@@ -2534,6 +2609,7 @@ class MainActivity : AppCompatActivity() {
         if (pagesUri == uri && pagesComplete) {
             reflowAdapter.notifyDataSetChanged()
             status.text = "${pages.size} páginas · refluxo"
+            loadPct = -1
             restorePending()
             pendingPage = -1
             updatePageIndicator()
@@ -2563,6 +2639,7 @@ class MainActivity : AppCompatActivity() {
                         reflowAdapter.notifyDataSetChanged()
                         status.text = "${pages.size} páginas · refluxo"
                         pagesComplete = true
+                        loadPct = -1
                         restorePending()
                         pendingPage = -1
                         updatePageIndicator()
@@ -2573,14 +2650,41 @@ class MainActivity : AppCompatActivity() {
                 // 2) extração: começa pela página atual e depois completa o resto
                 val stripper = LinkStripper().apply { sortByPosition = true }
                 val targets = ArrayList<LinkTarget>()
-                val total = synchronized(docLock) { ensureDoc(uri).numberOfPages }
+                // abre já: o número de páginas vem do leitor nativo (rápido), enquanto o arquivo é copiado e analisado
+                var early = -1
+                try {
+                    contentResolver.openFileDescriptor(uri, "r")?.use { fd ->
+                        val r = PdfRenderer(fd)
+                        early = r.pageCount
+                        r.close()
+                    }
+                } catch (_: Throwable) {
+                    early = -1
+                }
+                if (early > 0) {
+                    main.post {
+                        if (token != loadToken) return@post
+                        if (pages.isEmpty()) {
+                            for (k in 0 until early) pages.add(PageText("", emptyList(), false))
+                            reflowAdapter.notifyDataSetChanged()
+                            status.text = "Carregando… 0 de $early páginas"
+                            restorePending()
+                            updatePageIndicator()
+                        }
+                    }
+                }
+                val total = synchronized(docLock) { ensureDoc(uri, token).numberOfPages }
                 val start = if (startHint in 0 until total) startHint else 0
+                val earlyShown = early == total
                 main.post {
                     if (token != loadToken) return@post
-                    for (k in 0 until total) pages.add(PageText("", emptyList(), false))
-                    reflowAdapter.notifyDataSetChanged()
+                    if (!earlyShown) {
+                        pages.clear()
+                        for (k in 0 until total) pages.add(PageText("", emptyList(), false))
+                        reflowAdapter.notifyDataSetChanged()
+                        restorePending()
+                    }
                     status.text = "Carregando… 0 de $total páginas"
-                    restorePending()
                     updatePageIndicator()
                 }
                 val local = arrayOfNulls<PageText>(total)
@@ -2606,7 +2710,7 @@ class MainActivity : AppCompatActivity() {
                     val before = targets.size
                     // o documento é compartilhado: a trava é solta a cada página
                     val raw = synchronized(docLock) {
-                        val doc = ensureDoc(uri)
+                        val doc = ensureDoc(uri, token)
                         val page = doc.getPage(i)
                         stripper.pageLinks = try {
                             extractLinks(doc, page, targets)
@@ -2631,6 +2735,8 @@ class MainActivity : AppCompatActivity() {
                         }
                         status.text = if (d < total) "Carregando… $d de $total páginas"
                         else "$total páginas · refluxo"
+                        loadPct = if (d >= total) -1 else 30 + (70L * d / total).toInt()
+                        refreshLoadIndicator()
                         if (d >= total) resumeUi()
                         if (d == total) {
                             pagesComplete = true
@@ -2652,6 +2758,8 @@ class MainActivity : AppCompatActivity() {
                 main.post {
                     if (token != loadToken) return@post
                     status.text = "Não foi possível abrir o PDF."
+                    loadPct = -1
+                    refreshLoadIndicator()
                     Toast.makeText(this@MainActivity, "Não foi possível abrir o PDF.", Toast.LENGTH_LONG).show()
                     Toast.makeText(this, e.message ?: "Erro", Toast.LENGTH_LONG).show()
                 }
@@ -2664,6 +2772,7 @@ class MainActivity : AppCompatActivity() {
         if (pagesUri == uri && pagesComplete) {
             reflowAdapter.notifyDataSetChanged()
             status.text = "${pages.size} páginas · ${if (docIsComic) "quadrinhos" else if (docIsDoc) "DOC" else if (docIsDocx) "DOCX" else "EPUB"}"
+            loadPct = -1
             restorePending()
             pendingPage = -1
             updatePageIndicator()
@@ -2685,8 +2794,7 @@ class MainActivity : AppCompatActivity() {
                 epubZip = null
                 try { old?.close() } catch (_: Throwable) {}
                 val f = File(cacheDir, "epub_${System.identityHashCode(this@MainActivity)}.epub")
-                contentResolver.openInputStream(uri)?.use { ins -> f.outputStream().use { ins.copyTo(it) } }
-                    ?: throw IllegalStateException("Não foi possível ler o arquivo")
+                copyUri(uri, f, token, 0, 60)
                 epubFile = f
                 var zipSrc = f
                 val book = if (docIsComic) {
@@ -2703,6 +2811,7 @@ class MainActivity : AppCompatActivity() {
                     reflowAdapter.notifyDataSetChanged()
                     status.text = "${pages.size} páginas · ${if (docIsComic) "quadrinhos" else if (docIsDoc) "DOC" else if (docIsDocx) "DOCX" else "EPUB"}"
                     pagesComplete = true
+                    loadPct = -1
                     restorePending()
                     pendingPage = -1
                     updatePageIndicator()
@@ -2710,6 +2819,8 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Throwable) {
                 main.post {
                     if (token != loadToken) return@post
+                    loadPct = -1
+                    refreshLoadIndicator()
                     status.text = "Não foi possível abrir o arquivo."
                     Toast.makeText(this@MainActivity, "Não foi possível abrir o arquivo: ${e.message ?: "erro"}", Toast.LENGTH_LONG).show()
                 }
@@ -2844,6 +2955,7 @@ class MainActivity : AppCompatActivity() {
                     for (i in 0 until count) sizes.add(first)
                     imageAdapter.notifyDataSetChanged()
                     status.text = "$count páginas · original"
+                    loadPct = if (count > 1) 1 else -1
                     restorePending()
                     pendingPage = -1
                     updatePageIndicator()
@@ -2862,6 +2974,7 @@ class MainActivity : AppCompatActivity() {
                             p.close()
                         }
                         if (w != first[0] || h != first[1]) diffs.add(intArrayOf(i, w, h))
+                        if (i % 20 == 0 || i == count - 1) setLoad(token, (100L * i / (count - 1)).toInt())
                         if (diffs.isNotEmpty() && (diffs.size >= 30 || i == count - 1)) {
                             val batch = diffs
                             diffs = ArrayList()
@@ -2884,6 +2997,8 @@ class MainActivity : AppCompatActivity() {
                 main.post {
                     if (token != loadToken) return@post
                     status.text = "Não foi possível abrir o PDF no modo Original."
+                    loadPct = -1
+                    refreshLoadIndicator()
                     Toast.makeText(this@MainActivity, "Não foi possível abrir o PDF no modo Original.", Toast.LENGTH_LONG).show()
                     Toast.makeText(this, e.message ?: "Erro", Toast.LENGTH_LONG).show()
                 }
@@ -2903,15 +3018,16 @@ class MainActivity : AppCompatActivity() {
                 epubZip = null
                 try { old?.close() } catch (_: Throwable) {}
                 val f = File(cacheDir, "comic_src_${System.identityHashCode(this@MainActivity)}")
-                contentResolver.openInputStream(uri)?.use { ins -> f.outputStream().use { ins.copyTo(it) } }
-                    ?: throw IllegalStateException("Não foi possível ler o arquivo")
+                copyUri(uri, f, token, 0, 40)
                 epubFile = f
                 val ld = ComicBook.load(f, File(cacheDir, "comic_${System.identityHashCode(this@MainActivity)}.cbz"))
+                setLoad(token, 55)
                 val z = java.util.zip.ZipFile(ld.zip, ld.charset)
                 val names = ld.result.pages.map { it.image ?: "" }
                 val dims = ArrayList<IntArray>()
-                for (n in names) {
+                for ((ni, n) in names.withIndex()) {
                     if (token != loadToken) { try { z.close() } catch (_: Throwable) {}; return@Thread }
+                    if (ni % 10 == 0) setLoad(token, 55 + (45L * ni / names.size).toInt())
                     val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     try {
                         val e = z.getEntry(n)
@@ -2930,6 +3046,7 @@ class MainActivity : AppCompatActivity() {
                     sizes.addAll(dims)
                     imageAdapter.notifyDataSetChanged()
                     status.text = "${names.size} páginas · quadrinhos"
+                    loadPct = -1
                     restorePending()
                     pendingPage = -1
                     updatePageIndicator()
@@ -2937,6 +3054,8 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Throwable) {
                 main.post {
                     if (token != loadToken) return@post
+                    loadPct = -1
+                    refreshLoadIndicator()
                     status.text = "Não foi possível abrir o arquivo."
                     Toast.makeText(this@MainActivity, "Não foi possível abrir o arquivo: ${e.message ?: "erro"}", Toast.LENGTH_LONG).show()
                 }
@@ -2950,14 +3069,15 @@ class MainActivity : AppCompatActivity() {
      * Chame com [docLock]. Copia o PDF para o cache (leitura por arquivo é bem mais rápida
      * que ler tudo para a memória) e abre o documento uma única vez para texto, links e seleção.
      */
-    private fun ensureDoc(uri: Uri): PDDocument {
+    private fun ensureDoc(uri: Uri, token: Int = -1): PDDocument {
         val d = sharedDoc
         if (d != null && sharedDocUri == uri) return d
         try { sharedDoc?.close() } catch (_: Throwable) {}
         sharedDoc = null
         sharedDocUri = null
         val f = File(cacheDir, "atual.pdf")
-        contentResolver.openInputStream(uri)!!.use { input ->
+        if (token >= 0) copyUri(uri, f, token, 0, 30)
+        else contentResolver.openInputStream(uri)!!.use { input ->
             f.outputStream().use { out -> input.copyTo(out, 64 * 1024) }
         }
         val doc = PDDocument.load(f)
