@@ -570,6 +570,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pageIndicator: TextView
     private lateinit var loadIndicator: TextView
     private lateinit var indBox: LinearLayout
+    private var scanUri: Uri? = null // medição das páginas do modo Original em andamento (pode ser retomada)
+    private var scanArr = ArrayList<IntArray>()
+    private var scanNext = 1 // primeira página ainda não medida
     private var sizesUri: Uri? = null // arquivo a que pertence a lista [sizes] (número de páginas já conhecido)
     private var origScanUri: Uri? = null // PDF cujo tamanho de todas as páginas (modo Original) já foi medido
     private var origScanSizes: ArrayList<IntArray>? = null
@@ -2011,7 +2014,7 @@ class MainActivity : AppCompatActivity() {
         main.post {
             if (token != loadToken) return@post
             val v = pct.coerceAtMost(100)
-            if (v == loadPct) return@post
+            if (v == loadPct || (v < loadPct && v >= 0)) return@post // o indicador nunca volta atrás
             loadPct = v
             refreshLoadIndicator()
         }
@@ -3035,6 +3038,10 @@ class MainActivity : AppCompatActivity() {
         imageAdapter.notifyDataSetChanged()
         infoRequested.clear()
         status.text = "Abrindo…"
+        // medição interrompida numa saída anterior do modo Original: continua de onde parou
+        val snapSame = scanUri == uri
+        val snapArr: List<IntArray> = if (snapSame) ArrayList(scanArr) else emptyList()
+        val snapNext = if (snapSame) scanNext else 1
 
         Thread {
             var fd: ParcelFileDescriptor? = null
@@ -3078,9 +3085,15 @@ class MainActivity : AppCompatActivity() {
 
                 // só a primeira página é medida agora: as demais começam com o mesmo tamanho
                 // e são corrigidas em segundo plano (assim a leitura começa na hora)
-                val p0 = r.openPage(0)
-                val first = intArrayOf(p0.width, p0.height)
-                p0.close()
+                val resumeOk = snapArr.size == count && snapNext > 1
+                val first: IntArray
+                if (resumeOk) first = snapArr[0] else {
+                    val p0 = r.openPage(0)
+                    first = intArrayOf(p0.width, p0.height)
+                    p0.close()
+                }
+                val startAt = if (resumeOk) snapNext else 1
+                Dbg.log("Original: retomando=$resumeOk a partir da página $startAt de $count")
 
                 main.post {
                     if (token != loadToken) {
@@ -3094,12 +3107,17 @@ class MainActivity : AppCompatActivity() {
                         renderer = r
                         renderFd = f
                     }
-                    for (i in 0 until count) sizes.add(first)
+                    if (resumeOk) sizes.addAll(snapArr) else for (i in 0 until count) sizes.add(first)
+                    if (!resumeOk) {
+                        scanUri = uri
+                        scanArr = ArrayList(sizes)
+                        scanNext = 1
+                    }
                     sizesUri = uri
                     imageAdapter.notifyDataSetChanged()
                     status.text = "$count páginas · original"
                     Dbg.log("Original: páginas mostradas (início da medição), token=$token")
-                    loadPct = if (count > 1) 1 else -1
+                    loadPct = if (count > 1) maxOf(1, (100L * (startAt - 1) / (count - 1)).toInt()) else -1
                     restorePending()
                     pendingPage = -1
                     updatePageIndicator()
@@ -3107,7 +3125,7 @@ class MainActivity : AppCompatActivity() {
 
                 try {
                     var diffs = ArrayList<IntArray>()
-                    for (i in 1 until count) {
+                    for (i in startAt until count) {
                         if (token != loadToken) return@Thread
                         var w = 0
                         var h = 0
@@ -3120,17 +3138,20 @@ class MainActivity : AppCompatActivity() {
                         if (w != first[0] || h != first[1]) diffs.add(intArrayOf(i, w, h))
                         if (i % 20 == 0 || i == count - 1) setLoad(token, (100L * i / (count - 1)).toInt())
                         if (i % 100 == 0) Dbg.log("Original: medida a página $i de $count (token=$token atual=$loadToken)")
-                        if (diffs.isNotEmpty() && (diffs.size >= 30 || i == count - 1)) {
+                        if (i % 20 == 0 || i == count - 1) {
                             val batch = diffs
                             diffs = ArrayList()
+                            val nextI = i + 1
                             main.post {
                                 if (token != loadToken) return@post
                                 for (d in batch) {
                                     if (d[0] < sizes.size) {
                                         sizes[d[0]] = intArrayOf(d[1], d[2])
+                                        if (d[0] < scanArr.size) scanArr[d[0]] = sizes[d[0]]
                                         imageAdapter.notifyItemChanged(d[0])
                                     }
                                 }
+                                scanNext = nextI
                             }
                         }
                     }
