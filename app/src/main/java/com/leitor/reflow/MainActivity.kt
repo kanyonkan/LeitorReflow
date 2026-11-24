@@ -554,6 +554,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pageIndicator: TextView
     private lateinit var loadIndicator: TextView
     private lateinit var indBox: LinearLayout
+    private var sizesUri: Uri? = null // arquivo a que pertence a lista [sizes] (número de páginas já conhecido)
     private var origScanUri: Uri? = null // PDF cujo tamanho de todas as páginas (modo Original) já foi medido
     private var origScanSizes: ArrayList<IntArray>? = null
     @Volatile private var loadPct = -1 // progresso do carregamento do arquivo (0..99 visível; <0 ou >=100 escondido)
@@ -2621,12 +2622,33 @@ class MainActivity : AppCompatActivity() {
         uiPaused = false
         pausedChanges.clear()
         focusLock = -1
-        pages.clear()
-        reflowTargets.clear()
+        // voltou ao Refluxo antes do carregamento terminar: continua de onde parou (páginas já extraídas ficam)
+        val resume = pagesUri == uri && pages.isNotEmpty() && !pagesComplete
+        if (!resume) {
+            pages.clear()
+            reflowTargets.clear()
+        }
         pagesUri = uri
         pagesComplete = false
+        val seedPages: List<PageText> = if (resume) ArrayList(pages) else emptyList()
+        val seedTargets: List<LinkTarget> = if (resume) ArrayList(reflowTargets) else emptyList()
         reflowAdapter.notifyDataSetChanged()
         status.text = "Abrindo…"
+        if (resume) {
+            val ld = seedPages.count { it.loaded }
+            loadPct = if (seedPages.isNotEmpty()) (100L * ld / seedPages.size).toInt().coerceAtMost(99) else -1
+            restorePending()
+            updatePageIndicator()
+        }
+        // veio do modo Original: o número de páginas já é conhecido, então as páginas aparecem na hora
+        val knownCount = if (!resume && !docIsComic && sizesUri == uri) sizes.size else 0
+        if (knownCount > 0) {
+            for (k in 0 until knownCount) pages.add(PageText("", emptyList(), false))
+            reflowAdapter.notifyDataSetChanged()
+            status.text = "Carregando… 0 de $knownCount páginas"
+            restorePending()
+            updatePageIndicator()
+        }
         val cacheFile = reflowCacheFile(currentKey)
         val startHint = pendingPage // página em que você está: é extraída primeiro
 
@@ -2637,6 +2659,8 @@ class MainActivity : AppCompatActivity() {
                 if (cached != null) {
                     main.post {
                         if (token != loadToken) return@post
+                        pages.clear()
+                        reflowTargets.clear()
                         reflowTargets.addAll(cached.targets)
                         pages.addAll(cached.pages)
                         reflowAdapter.notifyDataSetChanged()
@@ -2653,12 +2677,12 @@ class MainActivity : AppCompatActivity() {
                 // 2) extração: começa pela página atual e depois completa o resto
                 // (com o documento já aberto, não há cópia: a extração usa a barra inteira)
                 val base = if (synchronized(docLock) { sharedDoc != null && sharedDocUri == uri }) 0 else 30
-                setLoad(token, 0)
+                if (seedPages.isEmpty()) setLoad(token, 0)
                 val stripper = LinkStripper().apply { sortByPosition = true }
-                val targets = ArrayList<LinkTarget>()
+                val targets = ArrayList<LinkTarget>(seedTargets)
                 // abre já: o número de páginas vem do leitor nativo (rápido), enquanto o arquivo é copiado e analisado
                 var early = -1
-                try {
+                if (seedPages.isEmpty() && knownCount <= 0) try {
                     contentResolver.openFileDescriptor(uri, "r")?.use { fd ->
                         val r = PdfRenderer(fd)
                         early = r.pageCount
@@ -2681,10 +2705,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 val total = synchronized(docLock) { ensureDoc(uri, token).numberOfPages }
                 val start = if (startHint in 0 until total) startHint else 0
-                val earlyShown = early == total
                 main.post {
                     if (token != loadToken) return@post
-                    if (!earlyShown) {
+                    if (pages.size != total) {
                         pages.clear()
                         for (k in 0 until total) pages.add(PageText("", emptyList(), false))
                         reflowAdapter.notifyDataSetChanged()
@@ -2700,6 +2723,27 @@ class MainActivity : AppCompatActivity() {
                 // e para trás), acompanhando as trocas de página enquanto o Refluxo é processado
                 reflowFocus = start
                 val finished = BooleanArray(total)
+                // continuação: páginas já extraídas antes da troca de modo não são refeitas
+                for (i in 0 until minOf(seedPages.size, total)) {
+                    val sp = seedPages[i]
+                    if (sp.loaded) {
+                        local[i] = sp
+                        finished[i] = true
+                        done++
+                        if (sp.text.isNotBlank()) withText++
+                    }
+                }
+                if (done >= total) {
+                    main.post {
+                        if (token != loadToken) return@post
+                        pagesComplete = true
+                        pendingPage = -1
+                        status.text = "$total páginas · refluxo"
+                        loadPct = -1
+                        refreshLoadIndicator()
+                        resumeUi()
+                    }
+                }
                 for (n in 0 until total) {
                     if (token != loadToken) return@Thread
                     val f = reflowFocus.coerceIn(0, total - 1)
@@ -2957,6 +3001,7 @@ class MainActivity : AppCompatActivity() {
                             renderFd = f
                         }
                         sizes.addAll(cachedSizes)
+                        sizesUri = uri
                         imageAdapter.notifyDataSetChanged()
                         status.text = "$count páginas · original"
                         loadPct = -1
@@ -2986,6 +3031,7 @@ class MainActivity : AppCompatActivity() {
                         renderFd = f
                     }
                     for (i in 0 until count) sizes.add(first)
+                    sizesUri = uri
                     imageAdapter.notifyDataSetChanged()
                     status.text = "$count páginas · original"
                     loadPct = if (count > 1) 1 else -1
