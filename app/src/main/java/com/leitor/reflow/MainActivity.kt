@@ -141,6 +141,22 @@ class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
     }
 }
 
+/** REGISTRO DE TESTE TEMPORÁRIO (versão de teste): anota rolagem, inércia, quadros lentos e leitura de imagens dos quadrinhos. */
+object Dbg {
+    private val sb = StringBuilder()
+    private val fmt = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
+    @Volatile var on = false
+
+    @Synchronized fun log(m: String) {
+        if (!on) return
+        sb.append(fmt.format(java.util.Date())).append(' ').append(m).append('\n')
+        if (sb.length > 120000) sb.delete(0, sb.length - 90000)
+    }
+
+    @Synchronized fun text(): String = sb.toString()
+    @Synchronized fun clear() = sb.setLength(0)
+}
+
 /** LinearLayoutManager que permite travar a rolagem lateral feita com o dedo. */
 class PagerLayoutManager(context: Context, orientation: Int) :
     LinearLayoutManager(context, orientation, false) {
@@ -557,6 +573,7 @@ class MainActivity : AppCompatActivity() {
     private var sizesUri: Uri? = null // arquivo a que pertence a lista [sizes] (número de páginas já conhecido)
     private var origScanUri: Uri? = null // PDF cujo tamanho de todas as páginas (modo Original) já foi medido
     private var origScanSizes: ArrayList<IntArray>? = null
+    private var lastLoggedPct = -2
     @Volatile private var loadPct = -1 // progresso do carregamento do arquivo (0..99 visível; <0 ou >=100 escondido)
     private lateinit var modeBtn: Button
     private lateinit var openBtn: Button
@@ -1179,6 +1196,28 @@ class MainActivity : AppCompatActivity() {
         bar.addView(row2, row2Lp)
         rowTwo = row2
 
+        // --- VERSÃO DE TESTE: registro de rolagem (toque = copiar, segurar = limpar) ---
+        val dbgBtn = makeBtn("Registro (teste): toque = copiar, segurar = limpar") {
+            val head = "LeitorReflow registro de teste | ${android.os.Build.MODEL} | Android ${android.os.Build.VERSION.RELEASE}\n"
+            val txt = head + Dbg.text()
+            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                .setPrimaryClip(ClipData.newPlainText("registro", txt))
+            Toast.makeText(this, "Registro copiado (${txt.count { it == '\n' }} linhas). Cole no chat.", Toast.LENGTH_LONG).show()
+        }
+        dbgBtn.setOnLongClickListener {
+            Dbg.clear()
+            Toast.makeText(this, "Registro limpo.", Toast.LENGTH_SHORT).show()
+            true
+        }
+        Dbg.on = true
+        val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row3.addView(dbgBtn)
+        val row3Lp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        row3Lp.topMargin = dp(2)
+        bar.addView(row3, row3Lp)
+
         status = TextView(this).apply {
             text = "Toque em Abrir e escolha um PDF, DOC, DOCX, EPUB, CBZ, CBR ou CB7."
             textSize = 13f
@@ -1269,6 +1308,19 @@ class MainActivity : AppCompatActivity() {
         )
 
         setContentView(root)
+        // teste: registra travadas da tela (thread principal parada por mais de 120 ms)
+        run {
+            var last = SystemClock.uptimeMillis()
+            val tick = object : Runnable {
+                override fun run() {
+                    val now = SystemClock.uptimeMillis()
+                    if (now - last > 170) Dbg.log("TRAVADA da tela: ${now - last - 50} ms parada")
+                    last = now
+                    main.postDelayed(this, 50)
+                }
+            }
+            main.postDelayed(tick, 50)
+        }
         // rolou (a lista ou a página ampliada): redesenha o pedaço visível em resolução total
         root.viewTreeObserver.addOnScrollChangedListener { scheduleTiles() }
 
@@ -1945,6 +1997,7 @@ class MainActivity : AppCompatActivity() {
     /** Mostra/esconde o indicador de carregamento: só com o menu visível e enquanto não chegou a 100%. */
     private fun refreshLoadIndicator() {
         val pct = loadPct
+        if (pct != lastLoggedPct) { lastLoggedPct = pct; if (pct < 0 || pct % 5 == 0 || pct < 3) Dbg.log("indicador: $pct% (${if (reflowMode) "refluxo" else "original"})") }
         if (pct in 0..99 && barVisible) {
             loadIndicator.text = if (reflowMode && !docIsEpub && !docIsDocx && !docIsComic) "Carregando Refluxo $pct%" else "Carregando… $pct%"
             loadIndicator.visibility = View.VISIBLE
@@ -2600,10 +2653,13 @@ class MainActivity : AppCompatActivity() {
     private fun show() {
         val uri = currentUri ?: return
         val token = ++loadToken
+        Dbg.log("show(): token=$token modo=${if (docIsComic) "quadrinhos" else if (reflowMode) "REFLUXO" else "ORIGINAL"} pagesComplete=$pagesComplete pages=${pages.size} sizes=${sizes.size} medidoOriginal=${origScanUri == uri} loadPct(antes)=$loadPct")
         loadPct = -1
         refreshLoadIndicator()
         clearSelection()
+        val t0 = SystemClock.uptimeMillis()
         closeRenderer()
+        Dbg.log("show(): closeRenderer levou ${SystemClock.uptimeMillis() - t0} ms")
         if (docIsComic) showComic(uri, token)
         else if (docIsEpub || docIsDocx) showEpub(uri, token)
         else if (reflowMode) showReflow(uri, token) else showOriginal(uri, token)
@@ -2652,10 +2708,13 @@ class MainActivity : AppCompatActivity() {
         val cacheFile = reflowCacheFile(currentKey)
         val startHint = pendingPage // página em que você está: é extraída primeiro
 
+        Dbg.log("Refluxo: resume=$resume seedPages=${seedPages.size} (carregadas=${seedPages.count { it.loaded }}) knownCount=$knownCount")
         Thread {
             try {
+                val tr0 = SystemClock.uptimeMillis()
                 // 1) texto já extraído numa abertura anterior: abre na hora
                 val cached = readReflowCache(cacheFile)
+                Dbg.log("Refluxo: leitura do cache levou ${SystemClock.uptimeMillis() - tr0} ms (achou=${cached != null})")
                 if (cached != null) {
                     main.post {
                         if (token != loadToken) return@post
@@ -2703,7 +2762,9 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 }
+                val te0 = SystemClock.uptimeMillis()
                 val total = synchronized(docLock) { ensureDoc(uri, token).numberOfPages }
+                Dbg.log("Refluxo: ensureDoc (cópia+abertura) levou ${SystemClock.uptimeMillis() - te0} ms, total=$total, early=$early")
                 val start = if (startHint in 0 until total) startHint else 0
                 main.post {
                     if (token != loadToken) return@post
@@ -2776,6 +2837,7 @@ class MainActivity : AppCompatActivity() {
                     local[i] = pt
                     done++
                     val d = done
+                    if (d % 25 == 0) Dbg.log("Refluxo: extraídas $d de $total (token=$token atual=$loadToken)")
                     main.post {
                         if (token != loadToken) return@post
                         reflowTargets.addAll(added)
@@ -2978,11 +3040,13 @@ class MainActivity : AppCompatActivity() {
             var fd: ParcelFileDescriptor? = null
             var pr: PdfRenderer? = null
             try {
+                val to0 = SystemClock.uptimeMillis()
                 val f = contentResolver.openFileDescriptor(uri, "r")!!
                 fd = f
                 val r = PdfRenderer(f)
                 pr = r
                 val count = r.pageCount
+                Dbg.log("Original: abrir PdfRenderer levou ${SystemClock.uptimeMillis() - to0} ms, páginas=$count, token=$token")
                 if (count == 0) throw IllegalStateException("PDF sem páginas")
 
                 val cachedSizes = if (origScanUri == uri) origScanSizes else null
@@ -3034,6 +3098,7 @@ class MainActivity : AppCompatActivity() {
                     sizesUri = uri
                     imageAdapter.notifyDataSetChanged()
                     status.text = "$count páginas · original"
+                    Dbg.log("Original: páginas mostradas (início da medição), token=$token")
                     loadPct = if (count > 1) 1 else -1
                     restorePending()
                     pendingPage = -1
@@ -3054,6 +3119,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         if (w != first[0] || h != first[1]) diffs.add(intArrayOf(i, w, h))
                         if (i % 20 == 0 || i == count - 1) setLoad(token, (100L * i / (count - 1)).toInt())
+                        if (i % 100 == 0) Dbg.log("Original: medida a página $i de $count (token=$token atual=$loadToken)")
                         if (diffs.isNotEmpty() && (diffs.size >= 30 || i == count - 1)) {
                             val batch = diffs
                             diffs = ArrayList()
@@ -3070,6 +3136,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     main.post {
                         if (token != loadToken) return@post
+                        Dbg.log("Original: medição completa")
                         origScanUri = uri
                         origScanSizes = ArrayList(sizes)
                         loadPct = -1
