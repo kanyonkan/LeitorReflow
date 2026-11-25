@@ -57,7 +57,7 @@ object ComicBook {
     class Loaded(val result: EpubBook.Result, val zip: File, val charset: java.nio.charset.Charset = Charsets.UTF_8)
 
     /** [src] é o arquivo copiado; [work] é onde guardar o zip refeito (só usado no RAR). */
-    fun load(src: File, work: File): Loaded {
+    fun load(src: File, work: File, progress: ((Int) -> Unit)? = null): Loaded {
         val head = ByteArray(8)
         val got = src.inputStream().use { it.read(head) }
         val hex = head.take(maxOf(got, 0)).joinToString(" ") { "%02X".format(it) }
@@ -67,16 +67,23 @@ object ComicBook {
         val zipFile: File = when {
             isZip -> src
             isRar -> {
-                repack(src, work)
+                // primeiro a biblioteca nativa (bem mais rápida); se falhar, a biblioteca antiga
+                var ok = false
+                try {
+                    repack5(src, work, progress)
+                    ok = ZipFile(work).use { it.size() > 0 }
+                } catch (_: Throwable) {
+                }
+                if (!ok) repack(src, work)
                 work
             }
             is7z -> {
-                repack5(src, work)
+                repack5(src, work, progress)
                 work
             }
             else -> {
                 // formato não identificado pelo início (ex.: RAR com bytes extras antes, CB7 renomeado): tenta libarchive
-                try { repack5(src, work) } catch (e: Throwable) {
+                try { repack5(src, work, progress) } catch (e: Throwable) {
                     throw IllegalArgumentException("Formato de quadrinhos não reconhecido (início $hex)")
                 }
                 work
@@ -146,7 +153,7 @@ object ComicBook {
         return n == 8 && h[3] == 0x21.toByte() && h[4] == 0x1A.toByte() && h[5] == 0x07.toByte() && h[6] == 0x01.toByte()
     }
 
-    private fun repack5(rar: File, out: File) {
+    private fun repack5(rar: File, out: File, progress: ((Int) -> Unit)? = null) {
         val arc = me.zhanghai.android.libarchive.Archive.readNew()
         try {
             me.zhanghai.android.libarchive.Archive.readSupportFilterAll(arc)
@@ -158,7 +165,9 @@ object ComicBook {
                 ZipOutputStream(out.outputStream().buffered()).use { zos ->
                     zos.setLevel(0)
                     val used = HashSet<String>()
-                    var first = true
+                    val srcLen = rar.length().coerceAtLeast(1L)
+                    var written = 0L
+                    var lastPct = -1
                     var e = me.zhanghai.android.libarchive.Archive.readNextHeader(arc)
                     while (e != 0L) {
                         val name: String = (me.zhanghai.android.libarchive.ArchiveEntry.pathnameUtf8(e) ?: "").replace('\\', '/')
@@ -176,6 +185,9 @@ object ComicBook {
                                 buf.get(tmp, 0, n)
                                 zos.write(tmp, 0, n)
                                 total += n
+                                written += n
+                                val pct = (99L * written / srcLen).toInt().coerceAtMost(99)
+                                if (pct != lastPct) { lastPct = pct; progress?.invoke(pct) }
                             }
                             zos.closeEntry()
                         }

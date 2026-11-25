@@ -2657,7 +2657,6 @@ class MainActivity : AppCompatActivity() {
         val startHint = pendingPage // página em que você está: é extraída primeiro
 
         Thread {
-            android.os.Process.setThreadPriority(9) // a tela tem prioridade sobre o carregamento
             try {
                 val tr0 = SystemClock.uptimeMillis()
                 // 1) texto já extraído numa abertura anterior: abre na hora
@@ -2877,10 +2876,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 if (done < total) {
-                    Thread {
-                        android.os.Process.setThreadPriority(9)
-                        try { runWorker(1) } catch (_: Throwable) {}
-                    }.start()
+                    Thread { try { runWorker(1) } catch (_: Throwable) {} }.start()
                     runWorker(0)
                 }
             } catch (e: Exception) {
@@ -3225,12 +3221,38 @@ class MainActivity : AppCompatActivity() {
                 epubZip = null
                 try { old?.close() } catch (_: Throwable) {}
                 val f = File(cacheDir, "comic_src_${System.identityHashCode(this@MainActivity)}")
-                copyUri(uri, f, token, 0, 40)
-                epubFile = f
-                val ld = ComicBook.load(f, File(cacheDir, "comic_${System.identityHashCode(this@MainActivity)}.cbz"))
+                val work = File(cacheDir, "comic_${System.identityHashCode(this@MainActivity)}.cbz")
+                val prog: (Int) -> Unit = { p -> setLoad(token, 40 + 15 * p / 100) }
+                // CBZ (zip): abre direto do arquivo escolhido, sem copiar (abre na hora, mesmo sendo grande)
+                var pfd: ParcelFileDescriptor? = null
+                var ld: ComicBook.Loaded? = null
+                try {
+                    val p = contentResolver.openFileDescriptor(uri, "r")
+                    pfd = p
+                    if (p != null) {
+                        val direct = File("/proc/self/fd/${p.fd}")
+                        val h = ByteArray(2)
+                        val got = java.io.FileInputStream(direct).use { it.read(h) }
+                        if (got == 2 && h[0] == 0x50.toByte() && h[1] == 0x4B.toByte()) {
+                            ld = ComicBook.load(direct, work, prog)
+                            // o zip é reaberto por este caminho logo abaixo: o descritor fica aberto até lá
+                        }
+                    }
+                } catch (_: Throwable) {
+                    ld = null
+                }
+                if (ld == null) {
+                    try { pfd?.close() } catch (_: Throwable) {}
+                    pfd = null
+                    copyUri(uri, f, token, 0, 40)
+                    epubFile = f
+                    ld = ComicBook.load(f, work, prog)
+                }
+                val ldr: ComicBook.Loaded = ld!!
                 setLoad(token, 55)
-                val z = java.util.zip.ZipFile(ld.zip, ld.charset)
-                val names = ld.result.pages.map { it.image ?: "" }
+                val z = java.util.zip.ZipFile(ldr.zip, ldr.charset)
+                try { pfd?.close() } catch (_: Throwable) {}
+                val names = ldr.result.pages.map { it.image ?: "" }
                 fun measure(n: String): IntArray {
                     val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     try {
