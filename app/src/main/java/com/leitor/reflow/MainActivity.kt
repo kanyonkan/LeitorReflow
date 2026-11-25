@@ -2808,7 +2808,7 @@ class MainActivity : AppCompatActivity() {
                         resumeUi()
                     }
                 }
-                // extração em paralelo: dois trabalhadores, cada um com sua própria cópia aberta do PDF
+                // extração em paralelo: três trabalhadores, cada um com sua própria cópia aberta do PDF
                 // (o documento do PDFBox não aceita uso simultâneo). Os links são lidos um a um no
                 // documento compartilhado, para os números dos links continuarem em ordem.
                 val doneA = java.util.concurrent.atomic.AtomicInteger(done)
@@ -2937,8 +2937,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 if (done < total) {
-                    val extra = Thread { try { runWorker(1) } catch (_: Throwable) {} }
-                    extra.start()
+                    for (w in 1..2) Thread { try { runWorker(w) } catch (_: Throwable) {} }.start()
                     runWorker(0)
                 }
             } catch (e: Exception) {
