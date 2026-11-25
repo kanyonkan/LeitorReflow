@@ -2657,6 +2657,7 @@ class MainActivity : AppCompatActivity() {
         val startHint = pendingPage // página em que você está: é extraída primeiro
 
         Thread {
+            android.os.Process.setThreadPriority(9) // a tela tem prioridade sobre o carregamento
             try {
                 val tr0 = SystemClock.uptimeMillis()
                 // 1) texto já extraído numa abertura anterior: abre na hora
@@ -2876,7 +2877,10 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 if (done < total) {
-                    Thread { try { runWorker(1) } catch (_: Throwable) {} }.start()
+                    Thread {
+                        android.os.Process.setThreadPriority(9)
+                        try { runWorker(1) } catch (_: Throwable) {}
+                    }.start()
                     runWorker(0)
                 }
             } catch (e: Exception) {
@@ -3054,6 +3058,7 @@ class MainActivity : AppCompatActivity() {
         val snapNext = if (snapSame) scanNext else 1
 
         Thread {
+            android.os.Process.setThreadPriority(9) // a tela tem prioridade sobre a medição das páginas
             var fd: ParcelFileDescriptor? = null
             var pr: PdfRenderer? = null
             try {
@@ -3130,13 +3135,31 @@ class MainActivity : AppCompatActivity() {
                     updatePageIndicator()
                 }
 
+                // a medição usa um leitor próprio: assim não disputa a trava com o desenho das páginas
+                var fd2: ParcelFileDescriptor? = null
+                var r2: PdfRenderer? = null
+                try {
+                    fd2 = contentResolver.openFileDescriptor(uri, "r")
+                    r2 = PdfRenderer(fd2!!)
+                } catch (_: Throwable) {
+                    try { r2?.close() } catch (_: Throwable) {}
+                    try { fd2?.close() } catch (_: Throwable) {}
+                    r2 = null
+                    fd2 = null
+                }
                 try {
                     var diffs = ArrayList<IntArray>()
                     for (i in startAt until count) {
                         if (token != loadToken) return@Thread
                         var w = 0
                         var h = 0
-                        synchronized(rendererLock) {
+                        val sr = r2
+                        if (sr != null) {
+                            val p = sr.openPage(i)
+                            w = p.width
+                            h = p.height
+                            p.close()
+                        } else synchronized(rendererLock) {
                             val p = r.openPage(i)
                             w = p.width
                             h = p.height
@@ -3169,6 +3192,9 @@ class MainActivity : AppCompatActivity() {
                         refreshLoadIndicator()
                     }
                 } catch (_: Throwable) {
+                } finally {
+                    try { r2?.close() } catch (_: Throwable) {}
+                    try { fd2?.close() } catch (_: Throwable) {}
                 }
             } catch (e: Throwable) {
                 try { pr?.close() } catch (_: Throwable) {}
@@ -3192,6 +3218,7 @@ class MainActivity : AppCompatActivity() {
         infoRequested.clear()
         status.text = "Abrindo…"
         Thread {
+            android.os.Process.setThreadPriority(9)
             try {
                 setLoad(token, 0)
                 val old = epubZip
@@ -3204,18 +3231,17 @@ class MainActivity : AppCompatActivity() {
                 setLoad(token, 55)
                 val z = java.util.zip.ZipFile(ld.zip, ld.charset)
                 val names = ld.result.pages.map { it.image ?: "" }
-                val dims = ArrayList<IntArray>()
-                for ((ni, n) in names.withIndex()) {
-                    if (token != loadToken) { try { z.close() } catch (_: Throwable) {}; return@Thread }
-                    if (ni % 10 == 0) setLoad(token, 55 + (45L * ni / names.size).toInt())
+                fun measure(n: String): IntArray {
                     val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     try {
                         val e = z.getEntry(n)
                         if (e != null) z.getInputStream(e).use { android.graphics.BitmapFactory.decodeStream(it, null, o) }
                     } catch (_: Throwable) {
                     }
-                    dims.add(if (o.outWidth > 0 && o.outHeight > 0) intArrayOf(o.outWidth, o.outHeight) else intArrayOf(1000, 1500))
+                    return if (o.outWidth > 0 && o.outHeight > 0) intArrayOf(o.outWidth, o.outHeight) else intArrayOf(1000, 1500)
                 }
+                // só a primeira imagem é medida agora: as páginas aparecem na hora e o resto é corrigido em segundo plano
+                val first = if (names.isNotEmpty()) measure(names[0]) else intArrayOf(1000, 1500)
                 main.post {
                     if (token != loadToken) {
                         try { z.close() } catch (_: Throwable) {}
@@ -3223,13 +3249,38 @@ class MainActivity : AppCompatActivity() {
                     }
                     epubZip = z
                     comicNames = names
-                    sizes.addAll(dims)
+                    for (k in names.indices) sizes.add(first)
                     imageAdapter.notifyDataSetChanged()
                     status.text = "${names.size} páginas · quadrinhos"
-                    loadPct = -1
+                    loadPct = if (names.size > 1) 55 else -1
                     restorePending()
                     pendingPage = -1
                     updatePageIndicator()
+                }
+                var diffs = ArrayList<IntArray>()
+                for (i in 1 until names.size) {
+                    if (token != loadToken) return@Thread
+                    val d = measure(names[i])
+                    if (d[0] != first[0] || d[1] != first[1]) diffs.add(intArrayOf(i, d[0], d[1]))
+                    if (i % 10 == 0 || i == names.size - 1) {
+                        setLoad(token, 55 + (45L * i / (names.size - 1)).toInt())
+                        val batch = diffs
+                        diffs = ArrayList()
+                        main.post {
+                            if (token != loadToken) return@post
+                            for (x in batch) {
+                                if (x[0] < sizes.size) {
+                                    sizes[x[0]] = intArrayOf(x[1], x[2])
+                                    imageAdapter.notifyItemChanged(x[0])
+                                }
+                            }
+                        }
+                    }
+                }
+                main.post {
+                    if (token != loadToken) return@post
+                    loadPct = -1
+                    refreshLoadIndicator()
                 }
             } catch (e: Throwable) {
                 main.post {
