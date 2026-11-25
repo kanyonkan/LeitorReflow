@@ -2826,8 +2826,18 @@ class MainActivity : AppCompatActivity() {
                             if (wid != 0) return@worker
                         }
                         val myStripper = LinkStripper().apply { sortByPosition = true }
+                        var sinceOpen = 0
                         while (true) {
                             if (token != loadToken) return@worker
+                            // o PDFBox guarda na memória tudo o que já leu: reabre a cópia de tempos em tempos
+                            // para liberar a memória (com a memória cheia a extração fica várias vezes mais lenta)
+                            if (myDoc != null && sinceOpen >= 60) {
+                                try { myDoc?.close() } catch (_: Throwable) {}
+                                myDoc = null
+                                myDoc = try { PDDocument.load(pdfFile) } catch (_: Throwable) { null }
+                                sinceOpen = 0
+                                if (myDoc == null && wid != 0) return@worker
+                            }
                             var i = -1
                             var links: List<PageLink> = emptyList()
                             synchronized(claimLock) {
@@ -2880,6 +2890,7 @@ class MainActivity : AppCompatActivity() {
                                 throw t
                             }
                             val tpText = SystemClock.uptimeMillis() - tp0
+                            sinceOpen++
                             val res = Reflow.reflow(raw)
                             if (token != loadToken) return@worker
                             if (res.text.isNotBlank()) withTextA.incrementAndGet()
