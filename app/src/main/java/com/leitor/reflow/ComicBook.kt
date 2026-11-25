@@ -64,17 +64,25 @@ object ComicBook {
         val isZip = head[0] == 0x50.toByte() && head[1] == 0x4B.toByte()
         val isRar = head[0] == 0x52.toByte() && head[1] == 0x61.toByte() && head[2] == 0x72.toByte()
         val is7z = head[0] == 0x37.toByte() && head[1] == 0x7A.toByte() && head[2] == 0xBC.toByte()
+        Dbg.log("ComicBook: tamanho=${src.length()} bytes, início=$hex, zip=$isZip rar=$isRar 7z=$is7z")
         val zipFile: File = when {
             isZip -> src
             isRar -> {
                 // primeiro a biblioteca nativa (bem mais rápida); se falhar, a biblioteca antiga
                 var ok = false
+                val tz = System.currentTimeMillis()
                 try {
                     repack5(src, work, progress)
                     ok = ZipFile(work).use { it.size() > 0 }
-                } catch (_: Throwable) {
+                    Dbg.log("ComicBook: libarchive converteu em ${System.currentTimeMillis() - tz} ms, ok=$ok")
+                } catch (e: Throwable) {
+                    Dbg.log("ComicBook: libarchive falhou em ${System.currentTimeMillis() - tz} ms: ${e.javaClass.simpleName}: ${e.message}")
                 }
-                if (!ok) repack(src, work)
+                if (!ok) {
+                    val tj = System.currentTimeMillis()
+                    repack(src, work)
+                    Dbg.log("ComicBook: junrar converteu em ${System.currentTimeMillis() - tj} ms")
+                }
                 work
             }
             is7z -> {
