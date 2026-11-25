@@ -2808,81 +2808,127 @@ class MainActivity : AppCompatActivity() {
                         resumeUi()
                     }
                 }
-                for (n in 0 until total) {
-                    if (token != loadToken) return@Thread
-                    val f = reflowFocus.coerceIn(0, total - 1)
-                    var sel = -1
-                    var dist = 0
-                    while (sel < 0 && dist < total) {
-                        if (f + dist < total && !finished[f + dist]) sel = f + dist
-                        else if (f - dist >= 0 && !finished[f - dist]) sel = f - dist
-                        dist++
-                    }
-                    if (sel < 0) break
-                    finished[sel] = true
-                    val i = sel
-                    val before = targets.size
-                    // o documento é compartilhado: a trava é solta a cada página
-                    val tp0 = SystemClock.uptimeMillis()
-                    var tpLock = 0L
-                    var tpGet = 0L
-                    var tpLinks = 0L
-                    val raw = synchronized(docLock) {
-                        tpLock = SystemClock.uptimeMillis() - tp0
-                        val doc = ensureDoc(uri, token)
-                        val t1 = SystemClock.uptimeMillis()
-                        val page = doc.getPage(i)
-                        tpGet = SystemClock.uptimeMillis() - t1
-                        val t2 = SystemClock.uptimeMillis()
-                        stripper.pageLinks = try {
-                            extractLinks(doc, page, targets)
-                        } catch (e: Exception) {
-                            emptyList()
+                // extração em paralelo: dois trabalhadores, cada um com sua própria cópia aberta do PDF
+                // (o documento do PDFBox não aceita uso simultâneo). Os links são lidos um a um no
+                // documento compartilhado, para os números dos links continuarem em ordem.
+                val doneA = java.util.concurrent.atomic.AtomicInteger(done)
+                val withTextA = java.util.concurrent.atomic.AtomicInteger(withText)
+                val claimLock = Any()
+                val pdfFile = File(cacheDir, "atual.pdf")
+                val runWorker: (Int) -> Unit = worker@{ wid ->
+                    var myDoc: PDDocument? = null
+                    try {
+                        try {
+                            myDoc = PDDocument.load(pdfFile)
+                        } catch (t: Throwable) {
+                            myDoc = null
+                            Dbg.log("Refluxo: trabalhador $wid sem cópia própria do PDF: ${t.javaClass.simpleName}")
+                            if (wid != 0) return@worker
                         }
-                        tpLinks = SystemClock.uptimeMillis() - t2
-                        stripper.extractPageText(doc, i + 1, pageWidth(page))
-                    }
-                    val tpText = SystemClock.uptimeMillis() - tp0 - tpLock - tpGet - tpLinks
-                    val tr1 = SystemClock.uptimeMillis()
-                    val added = ArrayList(targets.subList(before, targets.size))
-                    val res = Reflow.reflow(raw)
-                    val tpReflow = SystemClock.uptimeMillis() - tr1
-                    if (SystemClock.uptimeMillis() - tp0 > 400 || done % 25 == 0)
-                        Dbg.log("Refluxo pág ${i + 1}: espera trava=${tpLock} ms, getPage=${tpGet} ms, links=${tpLinks} ms, texto=${tpText} ms, reflow=${tpReflow} ms, caracteres=${raw.length}, memória livre=${Runtime.getRuntime().freeMemory() / 1048576} MB de ${Runtime.getRuntime().totalMemory() / 1048576} MB")
-                    if (token != loadToken) return@Thread
-                    if (res.text.isNotBlank()) withText++
-                    val pt = PageText(res.text, res.spans)
-                    local[i] = pt
-                    done++
-                    val d = done
-                    if (d % 25 == 0) Dbg.log("Refluxo: extraídas $d de $total (token=$token atual=$loadToken)")
-                    main.post {
-                        if (token != loadToken) return@post
-                        reflowTargets.addAll(added)
-                        if (i < pages.size) {
-                            pages[i] = pt
-                            notifyPage(i)
+                        val myStripper = LinkStripper().apply { sortByPosition = true }
+                        while (true) {
+                            if (token != loadToken) return@worker
+                            var i = -1
+                            var links: List<PageLink> = emptyList()
+                            synchronized(claimLock) {
+                                val f = reflowFocus.coerceIn(0, total - 1)
+                                var sel = -1
+                                var dist = 0
+                                while (sel < 0 && dist < total) {
+                                    if (f + dist < total && !finished[f + dist]) sel = f + dist
+                                    else if (f - dist >= 0 && !finished[f - dist]) sel = f - dist
+                                    dist++
+                                }
+                                if (sel >= 0) {
+                                    finished[sel] = true
+                                    i = sel
+                                    val before = targets.size
+                                    links = synchronized(docLock) {
+                                        val doc = ensureDoc(uri, token)
+                                        try {
+                                            extractLinks(doc, doc.getPage(sel), targets)
+                                        } catch (e: Exception) {
+                                            emptyList()
+                                        }
+                                    }
+                                    val added = ArrayList(targets.subList(before, targets.size))
+                                    if (added.isNotEmpty()) main.post {
+                                        if (token == loadToken) reflowTargets.addAll(added)
+                                    }
+                                }
+                            }
+                            if (i < 0) break
+                            val tp0 = SystemClock.uptimeMillis()
+                            val raw: String = try {
+                                val md = myDoc
+                                if (md != null) {
+                                    val page = md.getPage(i)
+                                    myStripper.pageLinks = links
+                                    myStripper.extractPageText(md, i + 1, pageWidth(page))
+                                } else {
+                                    synchronized(docLock) {
+                                        val doc = ensureDoc(uri, token)
+                                        val page = doc.getPage(i)
+                                        myStripper.pageLinks = links
+                                        myStripper.extractPageText(doc, i + 1, pageWidth(page))
+                                    }
+                                }
+                            } catch (t: Throwable) {
+                                synchronized(claimLock) { finished[i] = false }
+                                Dbg.log("Refluxo: trabalhador $wid falhou na página ${i + 1}: ${t.javaClass.simpleName}")
+                                if (wid != 0) return@worker
+                                throw t
+                            }
+                            val tpText = SystemClock.uptimeMillis() - tp0
+                            val res = Reflow.reflow(raw)
+                            if (token != loadToken) return@worker
+                            if (res.text.isNotBlank()) withTextA.incrementAndGet()
+                            val pt = PageText(res.text, res.spans)
+                            val d: Int
+                            synchronized(claimLock) {
+                                local[i] = pt
+                                d = doneA.incrementAndGet()
+                            }
+                            if (d % 25 == 0) Dbg.log("Refluxo: extraídas $d de $total (trabalhador $wid, texto=${tpText} ms, caracteres=${raw.length}, memória livre=${Runtime.getRuntime().freeMemory() / 1048576} MB de ${Runtime.getRuntime().totalMemory() / 1048576} MB)")
+                            val pi = i
+                            main.post {
+                                if (token != loadToken) return@post
+                                if (pi < pages.size) {
+                                    pages[pi] = pt
+                                    notifyPage(pi)
+                                }
+                                status.text = if (d < total) "Carregando… $d de $total páginas"
+                                else "$total páginas · refluxo"
+                                val np = if (d >= total) -1 else base + ((100 - base) * d.toLong() / total).toInt()
+                                if (d >= total || np > loadPct) loadPct = np
+                                refreshLoadIndicator()
+                                if (d >= total) resumeUi()
+                                if (d == total) {
+                                    pagesComplete = true
+                                    pendingPage = -1
+                                }
+                            }
+                            if (d == total) {
+                                if (local.all { it != null }) {
+                                    writeReflowCache(cacheFile, targets, local.map { it!! })
+                                }
+                                if (withTextA.get() == 0) {
+                                    main.post {
+                                        if (token != loadToken) return@post
+                                        status.text =
+                                            "Este PDF não tem texto (é só imagem). Use o modo Original ou faça o OCR."
+                                    }
+                                }
+                            }
                         }
-                        status.text = if (d < total) "Carregando… $d de $total páginas"
-                        else "$total páginas · refluxo"
-                        loadPct = if (d >= total) -1 else base + ((100 - base) * d.toLong() / total).toInt()
-                        refreshLoadIndicator()
-                        if (d >= total) resumeUi()
-                        if (d == total) {
-                            pagesComplete = true
-                            pendingPage = -1
-                        }
+                    } finally {
+                        try { myDoc?.close() } catch (_: Throwable) {}
                     }
                 }
-                if (local.all { it != null }) {
-                    writeReflowCache(cacheFile, targets, local.map { it!! })
-                }
-                if (withText == 0) {
-                    main.post {
-                        if (token != loadToken) return@post
-                        status.text =
-                            "Este PDF não tem texto (é só imagem). Use o modo Original ou faça o OCR."
-                    }
+                if (done < total) {
+                    val extra = Thread { try { runWorker(1) } catch (_: Throwable) {} }
+                    extra.start()
+                    runWorker(0)
                 }
             } catch (e: Exception) {
                 main.post {
