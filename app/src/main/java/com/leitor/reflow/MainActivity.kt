@@ -2823,18 +2823,33 @@ class MainActivity : AppCompatActivity() {
                     val i = sel
                     val before = targets.size
                     // o documento é compartilhado: a trava é solta a cada página
+                    val tp0 = SystemClock.uptimeMillis()
+                    var tpLock = 0L
+                    var tpGet = 0L
+                    var tpLinks = 0L
                     val raw = synchronized(docLock) {
+                        tpLock = SystemClock.uptimeMillis() - tp0
                         val doc = ensureDoc(uri, token)
+                        val t1 = SystemClock.uptimeMillis()
                         val page = doc.getPage(i)
+                        tpGet = SystemClock.uptimeMillis() - t1
+                        val t2 = SystemClock.uptimeMillis()
                         stripper.pageLinks = try {
                             extractLinks(doc, page, targets)
                         } catch (e: Exception) {
                             emptyList()
                         }
+                        tpLinks = SystemClock.uptimeMillis() - t2
                         stripper.extractPageText(doc, i + 1, pageWidth(page))
                     }
+                    val tpText = SystemClock.uptimeMillis() - tp0 - tpLock - tpGet - tpLinks
+                    val tr1 = SystemClock.uptimeMillis()
                     val added = ArrayList(targets.subList(before, targets.size))
                     val res = Reflow.reflow(raw)
+                    val tpReflow = SystemClock.uptimeMillis() - tr1
+                    if (SystemClock.uptimeMillis() - tp0 > 400 || done % 25 == 0)
+                        Dbg.log("Refluxo pág ${i + 1}: espera trava=${tpLock} ms, getPage=${tpGet} ms, links=${tpLinks} ms, texto=${tpText} ms, reflow=${tpReflow} ms, caracteres=${raw.length}, memória livre=${Runtime.getRuntime().freeMemory() / 1048576} MB de ${Runtime.getRuntime().totalMemory() / 1048576} MB")
+                    if (token != loadToken) return@Thread
                     if (res.text.isNotBlank()) withText++
                     val pt = PageText(res.text, res.spans)
                     local[i] = pt
