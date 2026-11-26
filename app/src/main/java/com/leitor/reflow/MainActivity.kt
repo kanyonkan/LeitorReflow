@@ -482,6 +482,9 @@ class MainActivity : AppCompatActivity() {
     private var sharedDoc: PDDocument? = null
     private var sharedDocUri: Uri? = null
     private var docFile: File? = null // arquivo (ou caminho direto) de onde o documento compartilhado foi aberto
+    private var docFis: java.io.FileInputStream? = null // canal de leitura direta (sem cópia) do PDF
+    private var docChannel: java.nio.channels.FileChannel? = null
+    private var docChLen = 0L
     private var docPfd: ParcelFileDescriptor? = null // mantém aberto o descritor quando o PDF é lido direto, sem cópia
 
     // ---- seleção de texto no modo original ----
@@ -1445,6 +1448,9 @@ class MainActivity : AppCompatActivity() {
         textExec.execute {
             synchronized(docLock) {
                 try { sharedDoc?.close() } catch (_: Throwable) {}
+                try { docFis?.close() } catch (_: Throwable) {}
+                docFis = null
+                docChannel = null
                 try { docPfd?.close() } catch (_: Throwable) {}
                 sharedDoc = null
             }
@@ -2800,11 +2806,20 @@ class MainActivity : AppCompatActivity() {
                 val withTextA = java.util.concurrent.atomic.AtomicInteger(withText)
                 val claimLock = Any()
                 val pdfFile = docFile ?: File(cacheDir, "atual.pdf")
+                val chan = docChannel
+                val chanLen = docChLen
+                val openMine: () -> PDDocument = {
+                    if (chan != null) {
+                        val ps = com.tom_roush.pdfbox.pdfparser.PDFParser(FdAccess(chan, chanLen))
+                        ps.parse()
+                        ps.getPDDocument()
+                    } else PDDocument.load(pdfFile)
+                }
                 val runWorker: (Int) -> Unit = worker@{ wid ->
                     var myDoc: PDDocument? = null
                     try {
                         try {
-                            myDoc = PDDocument.load(pdfFile)
+                            myDoc = openMine()
                         } catch (t: Throwable) {
                             myDoc = null
                             if (wid != 0) return@worker
@@ -2818,7 +2833,7 @@ class MainActivity : AppCompatActivity() {
                             if (myDoc != null && sinceOpen >= 60) {
                                 try { myDoc?.close() } catch (_: Throwable) {}
                                 myDoc = null
-                                myDoc = try { PDDocument.load(pdfFile) } catch (_: Throwable) { null }
+                                myDoc = try { openMine() } catch (_: Throwable) { null }
                                 sinceOpen = 0
                                 if (myDoc == null && wid != 0) return@worker
                             }
@@ -3382,8 +3397,12 @@ class MainActivity : AppCompatActivity() {
         val d = sharedDoc
         if (d != null && sharedDocUri == uri) return d
         try { sharedDoc?.close() } catch (_: Throwable) {}
+        try { docFis?.close() } catch (_: Throwable) {}
+        docFis = null
+        docChannel = null
         try { docPfd?.close() } catch (_: Throwable) {}
         docPfd = null
+        docFile = null
         sharedDoc = null
         sharedDocUri = null
         // primeiro tenta abrir direto do arquivo escolhido (sem copiar: abre na hora mesmo sendo grande)
@@ -3393,23 +3412,32 @@ class MainActivity : AppCompatActivity() {
             val p = contentResolver.openFileDescriptor(uri, "r")
             if (p != null) {
                 try {
-                    val direct = File("/proc/self/fd/${p.fd}")
-                    val h = ByteArray(5)
-                    val got = java.io.FileInputStream(direct).use { it.read(h) }
-                    if (got == 5 && String(h, Charsets.ISO_8859_1) == "%PDF-") {
-                        doc = PDDocument.load(direct)
+                    val fis = java.io.FileInputStream(p.fileDescriptor)
+                    val ch = fis.channel
+                    val len = ch.size()
+                    val hb = java.nio.ByteBuffer.allocate(5)
+                    ch.read(hb, 0L)
+                    if (len > 0 && String(hb.array(), Charsets.ISO_8859_1) == "%PDF-") {
+                        val parser = com.tom_roush.pdfbox.pdfparser.PDFParser(FdAccess(ch, len))
+                        parser.parse()
+                        doc = parser.getPDDocument()
+                        docFis = fis
+                        docChannel = ch
+                        docChLen = len
                         docPfd = p
-                        docFile = direct
-                        Dbg.log("PDF: aberto direto, sem copiar (${SystemClock.uptimeMillis() - t0} ms)")
+                        docFile = null
+                        Dbg.log("PDF: aberto direto pelo descritor, sem copiar (${SystemClock.uptimeMillis() - t0} ms)")
                     } else {
                         p.close()
-                        Dbg.log("PDF: acesso direto recusado (cabeçalho não confere)")
+                        Dbg.log("PDF: leitura direta recusada (cabeçalho não confere)")
                     }
                 } catch (e: Throwable) {
                     try { doc?.close() } catch (_: Throwable) {}
                     doc = null
+                    docFis = null
+                    docChannel = null
                     try { p.close() } catch (_: Throwable) {}
-                    Dbg.log("PDF: acesso direto falhou: ${e.javaClass.simpleName}: ${e.message}")
+                    Dbg.log("PDF: leitura direta falhou: ${e.javaClass.simpleName}: ${e.message}")
                 }
             }
         } catch (e: Throwable) {
