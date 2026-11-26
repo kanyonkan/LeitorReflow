@@ -3268,7 +3268,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * CBR/CB7 (RAR e 7z): lê o arquivo escolhido direto pelo descritor, sem copiar, e extrai uma imagem por vez
+     * CBZ/CBR/CB7 (zip, RAR e 7z): lê o arquivo escolhido direto pelo descritor, sem copiar, e extrai uma imagem por vez
      * para o cache; cada página aparece assim que é extraída. Devolve false (sem ter mostrado nada) se não for
      * possível; aí o chamador usa o caminho antigo (cópia + conversão para zip).
      */
@@ -3282,14 +3282,15 @@ class MainActivity : AppCompatActivity() {
             val got = try { android.system.Os.pread(pfd.fileDescriptor, h, 0, 8, 0L) } catch (_: Throwable) { -1 }
             val isRar = got >= 3 && h[0] == 0x52.toByte() && h[1] == 0x61.toByte() && h[2] == 0x72.toByte()
             val is7z = got >= 3 && h[0] == 0x37.toByte() && h[1] == 0x7A.toByte() && h[2] == 0xBC.toByte()
-            if (!isRar && !is7z) return false
+            val isZip = got >= 2 && h[0] == 0x50.toByte() && h[1] == 0x4B.toByte()
+            if (!isRar && !is7z && !isZip) return false
             val dir = File(cacheDir, "comic_pages_${System.identityHashCode(this@MainActivity)}")
             dir.mkdirs()
             dir.listFiles()?.forEach { try { it.delete() } catch (_: Throwable) {} }
             me.zhanghai.android.libarchive.Archive.readSupportFilterAll(arcs)
             me.zhanghai.android.libarchive.Archive.readSupportFormatAll(arcs)
             me.zhanghai.android.libarchive.Archive.readOpenFd(arcs, pfd.fd, 65536)
-            Dbg.log("Quadrinhos: leitura progressiva iniciada (${if (isRar) "RAR" else "7z"})")
+            Dbg.log("Quadrinhos: leitura progressiva iniciada (${if (isRar) "RAR" else if (is7z) "7z" else "zip"})")
             val srcLen = pfd.statSize.coerceAtLeast(1L)
             val buf = java.nio.ByteBuffer.allocateDirect(65536)
             val tmp = ByteArray(65536)
