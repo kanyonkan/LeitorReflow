@@ -141,22 +141,6 @@ class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
     }
 }
 
-/** REGISTRO DE TESTE TEMPORÁRIO (versão de teste): anota rolagem, inércia, quadros lentos e leitura de imagens dos quadrinhos. */
-object Dbg {
-    private val sb = StringBuilder()
-    private val fmt = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
-    @Volatile var on = false
-
-    @Synchronized fun log(m: String) {
-        if (!on) return
-        sb.append(fmt.format(java.util.Date())).append(' ').append(m).append('\n')
-        if (sb.length > 120000) sb.delete(0, sb.length - 90000)
-    }
-
-    @Synchronized fun text(): String = sb.toString()
-    @Synchronized fun clear() = sb.setLength(0)
-}
-
 /** LinearLayoutManager que permite travar a rolagem lateral feita com o dedo. */
 class PagerLayoutManager(context: Context, orientation: Int) :
     LinearLayoutManager(context, orientation, false) {
@@ -1203,28 +1187,6 @@ class MainActivity : AppCompatActivity() {
         row2Lp.topMargin = dp(2)
         bar.addView(row2, row2Lp)
         rowTwo = row2
-
-        // --- VERSÃO DE TESTE: registro de rolagem (toque = copiar, segurar = limpar) ---
-        val dbgBtn = makeBtn("Registro (teste): toque = copiar, segurar = limpar") {
-            val head = "LeitorReflow registro de teste | ${android.os.Build.MODEL} | Android ${android.os.Build.VERSION.RELEASE}\n"
-            val txt = head + Dbg.text()
-            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                .setPrimaryClip(ClipData.newPlainText("registro", txt))
-            Toast.makeText(this, "Registro copiado (${txt.count { it == '\n' }} linhas). Cole no chat.", Toast.LENGTH_LONG).show()
-        }
-        dbgBtn.setOnLongClickListener {
-            Dbg.clear()
-            Toast.makeText(this, "Registro limpo.", Toast.LENGTH_SHORT).show()
-            true
-        }
-        Dbg.on = true
-        val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row3.addView(dbgBtn)
-        val row3Lp = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-        row3Lp.topMargin = dp(2)
-        bar.addView(row3, row3Lp)
 
         status = TextView(this).apply {
             text = "Toque em Abrir e escolha um PDF, DOC, DOCX, EPUB, CBZ, CBR ou CB7."
@@ -2757,9 +2719,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 val te0 = SystemClock.uptimeMillis()
-                Dbg.log("Refluxo: ${te0 - tr0} ms desde o início da thread até abrir o documento")
                 val total = synchronized(docLock) { ensureDoc(uri, token).numberOfPages }
-                Dbg.log("Refluxo: documento aberto (${SystemClock.uptimeMillis() - te0} ms), total=$total, early=$early")
                 val start = if (startHint in 0 until total) startHint else 0
                 main.post {
                     if (token != loadToken) return@post
@@ -2899,7 +2859,6 @@ class MainActivity : AppCompatActivity() {
                                 local[i] = pt
                                 d = doneA.incrementAndGet()
                             }
-                            if (d <= 3 || d % 25 == 0) Dbg.log("Refluxo: extraídas $d de $total (trabalhador $wid, texto=${tpText} ms) a ${SystemClock.uptimeMillis() - tr0} ms do início")
                             val pi = i
                             main.post {
                                 if (token != loadToken) return@post
@@ -3290,7 +3249,6 @@ class MainActivity : AppCompatActivity() {
             me.zhanghai.android.libarchive.Archive.readSupportFilterAll(arcs)
             me.zhanghai.android.libarchive.Archive.readSupportFormatAll(arcs)
             me.zhanghai.android.libarchive.Archive.readOpenFd(arcs, pfd.fd, 65536)
-            Dbg.log("Quadrinhos: leitura progressiva iniciada (${if (isRar) "RAR" else if (is7z) "7z" else "zip"})")
             val srcLen = pfd.statSize.coerceAtLeast(1L)
             val buf = java.nio.ByteBuffer.allocateDirect(65536)
             val tmp = ByteArray(65536)
@@ -3329,7 +3287,6 @@ class MainActivity : AppCompatActivity() {
                     shown++
                     val count = shown
                     val pct = (99L * (written + skipped) / srcLen).toInt().coerceAtMost(99)
-                    if (first) Dbg.log("Quadrinhos: primeira página extraída em ${SystemClock.uptimeMillis() - t0} ms")
                     main.post {
                         if (token != loadToken) return@post
                         comicFiles.add(out)
@@ -3353,7 +3310,6 @@ class MainActivity : AppCompatActivity() {
             // se o arquivo não estava em ordem natural, reordena as páginas no final
             val order = names.indices.sortedWith { a, b -> ComicBook.natural.compare(names[a], names[b]) }
             val sorted = order.withIndex().all { it.index == it.value }
-            Dbg.log("Quadrinhos: $shown páginas extraídas em ${SystemClock.uptimeMillis() - t0} ms, ordem ok=$sorted")
             main.post {
                 if (token != loadToken) return@post
                 if (!sorted && comicFiles.size == order.size) {
@@ -3371,7 +3327,6 @@ class MainActivity : AppCompatActivity() {
             }
             return true
         } catch (t: Throwable) {
-            Dbg.log("Quadrinhos: leitura progressiva falhou (páginas=$shown): ${t.javaClass.simpleName}: ${t.message}")
             if (shown == 0) return false
             main.post {
                 if (token != loadToken) return@post
@@ -3407,7 +3362,6 @@ class MainActivity : AppCompatActivity() {
                 val prog: (Int) -> Unit = { p -> setLoad(token, 35 + 35 * p / 100) }
                 // CBZ (zip): abre direto do arquivo escolhido, sem copiar (abre na hora, mesmo sendo grande)
                 val tc0 = SystemClock.uptimeMillis()
-                Dbg.log("Quadrinhos: início token=$token")
                 var pfd: ParcelFileDescriptor? = null
                 var ld: ComicBook.Loaded? = null
                 try {
@@ -3417,15 +3371,12 @@ class MainActivity : AppCompatActivity() {
                         val direct = File("/proc/self/fd/${p.fd}")
                         val h = ByteArray(2)
                         val got = java.io.FileInputStream(direct).use { it.read(h) }
-                        Dbg.log("Quadrinhos: acesso direto lido, cabeçalho=${"%02X %02X".format(h[0], h[1])}")
                         if (got == 2 && h[0] == 0x50.toByte() && h[1] == 0x4B.toByte()) {
                             ld = ComicBook.load(direct, work, prog)
-                            Dbg.log("Quadrinhos: zip aberto direto em ${SystemClock.uptimeMillis() - tc0} ms")
                             // o zip é reaberto por este caminho logo abaixo: o descritor fica aberto até lá
                         }
                     }
                 } catch (e: Throwable) {
-                    Dbg.log("Quadrinhos: acesso direto falhou: ${e.javaClass.simpleName}: ${e.message}")
                     ld = null
                 }
                 if (ld == null) {
@@ -3433,11 +3384,9 @@ class MainActivity : AppCompatActivity() {
                     pfd = null
                     val tcp = SystemClock.uptimeMillis()
                     copyUri(uri, f, token, 0, 35)
-                    Dbg.log("Quadrinhos: cópia levou ${SystemClock.uptimeMillis() - tcp} ms (${f.length() / 1048576} MB)")
                     epubFile = f
                     val tl = SystemClock.uptimeMillis()
                     ld = ComicBook.load(f, work, prog)
-                    Dbg.log("Quadrinhos: ComicBook.load levou ${SystemClock.uptimeMillis() - tl} ms")
                 }
                 val ldr: ComicBook.Loaded = ld!!
                 setLoad(token, 70)
@@ -3455,7 +3404,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 // só a primeira imagem é medida agora: as páginas aparecem na hora e o resto é corrigido em segundo plano
                 val first = if (names.isNotEmpty()) measure(names[0]) else intArrayOf(1000, 1500)
-                Dbg.log("Quadrinhos: ${names.size} páginas, primeira medida em ${SystemClock.uptimeMillis() - tc0} ms desde o início")
                 main.post {
                     if (token != loadToken) {
                         try { z.close() } catch (_: Throwable) {}
@@ -3468,7 +3416,6 @@ class MainActivity : AppCompatActivity() {
                     status.text = "${names.size} páginas · quadrinhos"
                     loadPct = if (names.size > 1) 70 else -1
                     refreshLoadIndicator()
-                    Dbg.log("Quadrinhos: páginas mostradas em ${SystemClock.uptimeMillis() - tc0} ms desde o início")
                     restorePending()
                     pendingPage = -1
                     updatePageIndicator()
@@ -3549,10 +3496,8 @@ class MainActivity : AppCompatActivity() {
                         docChLen = len
                         docPfd = p
                         docFile = null
-                        Dbg.log("PDF: aberto direto pelo descritor, sem copiar (${SystemClock.uptimeMillis() - t0} ms)")
                     } else {
                         p.close()
-                        Dbg.log("PDF: leitura direta recusada (cabeçalho não confere)")
                     }
                 } catch (e: Throwable) {
                     try { doc?.close() } catch (_: Throwable) {}
@@ -3560,11 +3505,9 @@ class MainActivity : AppCompatActivity() {
                     docFis = null
                     docChannel = null
                     try { p.close() } catch (_: Throwable) {}
-                    Dbg.log("PDF: leitura direta falhou: ${e.javaClass.simpleName}: ${e.message}")
                 }
             }
         } catch (e: Throwable) {
-            Dbg.log("PDF: não foi possível abrir o descritor: ${e.javaClass.simpleName}")
         }
         if (doc == null) {
             val f = File(cacheDir, "atual.pdf")
@@ -3574,7 +3517,6 @@ class MainActivity : AppCompatActivity() {
             }
             doc = PDDocument.load(f)
             docFile = f
-            Dbg.log("PDF: copiado para o cache e aberto (${SystemClock.uptimeMillis() - t0} ms)")
         }
         sharedDoc = doc
         sharedDocUri = uri
