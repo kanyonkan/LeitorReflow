@@ -3297,6 +3297,7 @@ class MainActivity : AppCompatActivity() {
             val used = HashSet<String>()
             val names = ArrayList<String>()
             var written = 0L
+            var skipped = 0L // tamanho das entradas que não são imagem: também contam no progresso
             var e = me.zhanghai.android.libarchive.Archive.readNextHeader(arcs)
             while (e != 0L) {
                 if (token != loadToken) return true
@@ -3327,7 +3328,7 @@ class MainActivity : AppCompatActivity() {
                     val first = shown == 0
                     shown++
                     val count = shown
-                    val pct = (99L * written / srcLen).toInt().coerceAtMost(99)
+                    val pct = (99L * (written + skipped) / srcLen).toInt().coerceAtMost(99)
                     if (first) Dbg.log("Quadrinhos: primeira página extraída em ${SystemClock.uptimeMillis() - t0} ms")
                     main.post {
                         if (token != loadToken) return@post
@@ -3342,6 +3343,9 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                     setLoad(token, pct)
+                } else if (size > 0) {
+                    skipped += size
+                    setLoad(token, (99L * (written + skipped) / srcLen).toInt().coerceAtMost(99))
                 }
                 e = me.zhanghai.android.libarchive.Archive.readNextHeader(arcs)
             }
