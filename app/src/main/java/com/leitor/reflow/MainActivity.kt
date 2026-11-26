@@ -440,6 +440,7 @@ class MainActivity : AppCompatActivity() {
     private var docIsDocx = false // arquivo aberto é DOCX (também vale para DOC: mesmo comportamento)
     private var docIsDoc = false // arquivo aberto é DOC
     private var docIsComic = false // arquivo aberto é CBZ/CBR (quadrinhos: usa o visualizador do modo Original)
+    private var comicFiles = ArrayList<File>() // CBR/CB7 aberto aos poucos: uma imagem extraída por página
     private var comicNames: List<String> = emptyList() // imagem de cada página do CBZ/CBR
     private lateinit var searchBtnRef: Button
     private lateinit var swipeBtn: Button
@@ -3266,8 +3267,124 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    /**
+     * CBR/CB7 (RAR e 7z): lê o arquivo escolhido direto pelo descritor, sem copiar, e extrai uma imagem por vez
+     * para o cache; cada página aparece assim que é extraída. Devolve false (sem ter mostrado nada) se não for
+     * possível; aí o chamador usa o caminho antigo (cópia + conversão para zip).
+     */
+    private fun comicStream(uri: Uri, token: Int): Boolean {
+        val pfd = try { contentResolver.openFileDescriptor(uri, "r") } catch (_: Throwable) { null } ?: return false
+        var shown = 0
+        val t0 = SystemClock.uptimeMillis()
+        val arcs = me.zhanghai.android.libarchive.Archive.readNew()
+        try {
+            val h = ByteArray(8)
+            val got = try { android.system.Os.pread(pfd.fileDescriptor, h, 0, 8, 0L) } catch (_: Throwable) { -1 }
+            val isRar = got >= 3 && h[0] == 0x52.toByte() && h[1] == 0x61.toByte() && h[2] == 0x72.toByte()
+            val is7z = got >= 3 && h[0] == 0x37.toByte() && h[1] == 0x7A.toByte() && h[2] == 0xBC.toByte()
+            if (!isRar && !is7z) return false
+            val dir = File(cacheDir, "comic_pages_${System.identityHashCode(this@MainActivity)}")
+            dir.mkdirs()
+            dir.listFiles()?.forEach { try { it.delete() } catch (_: Throwable) {} }
+            me.zhanghai.android.libarchive.Archive.readSupportFilterAll(arcs)
+            me.zhanghai.android.libarchive.Archive.readSupportFormatAll(arcs)
+            me.zhanghai.android.libarchive.Archive.readOpenFd(arcs, pfd.fd, 65536)
+            Dbg.log("Quadrinhos: leitura progressiva iniciada (${if (isRar) "RAR" else "7z"})")
+            val srcLen = pfd.statSize.coerceAtLeast(1L)
+            val buf = java.nio.ByteBuffer.allocateDirect(65536)
+            val tmp = ByteArray(65536)
+            val used = HashSet<String>()
+            val names = ArrayList<String>()
+            var written = 0L
+            var e = me.zhanghai.android.libarchive.Archive.readNextHeader(arcs)
+            while (e != 0L) {
+                if (token != loadToken) return true
+                val name: String = (me.zhanghai.android.libarchive.ArchiveEntry.pathnameUtf8(e) ?: "").replace('\\', '/')
+                val size = me.zhanghai.android.libarchive.ArchiveEntry.stat(e).stSize
+                if (size > 0 && ComicBook.isImage(name) && used.add(name)) {
+                    val ext = name.substringAfterLast('.', "jpg").lowercase().filter { it.isLetterOrDigit() }.ifEmpty { "jpg" }
+                    val out = File(dir, "%05d.%s".format(names.size, ext))
+                    var total = 0L
+                    java.io.FileOutputStream(out).buffered(65536).use { os ->
+                        while (total < size) {
+                            buf.clear()
+                            me.zhanghai.android.libarchive.Archive.readData(arcs, buf)
+                            val n = if (buf.position() > 0) buf.position()
+                            else if (buf.limit() < buf.capacity()) buf.limit() else 0
+                            if (n <= 0) break
+                            buf.flip().let { if (it.limit() == 0) { buf.limit(n); buf.position(0) } }
+                            buf.get(tmp, 0, n)
+                            os.write(tmp, 0, n)
+                            total += n
+                            written += n
+                        }
+                    }
+                    val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    try { android.graphics.BitmapFactory.decodeFile(out.path, o) } catch (_: Throwable) {}
+                    val dims = if (o.outWidth > 0 && o.outHeight > 0) intArrayOf(o.outWidth, o.outHeight) else intArrayOf(1000, 1500)
+                    names.add(name)
+                    val first = shown == 0
+                    shown++
+                    val count = shown
+                    val pct = (99L * written / srcLen).toInt().coerceAtMost(99)
+                    if (first) Dbg.log("Quadrinhos: primeira página extraída em ${SystemClock.uptimeMillis() - t0} ms")
+                    main.post {
+                        if (token != loadToken) return@post
+                        comicFiles.add(out)
+                        sizes.add(dims)
+                        imageAdapter.notifyItemInserted(sizes.size - 1)
+                        status.text = "$count páginas · quadrinhos"
+                        if (first) {
+                            restorePending()
+                            pendingPage = -1
+                            updatePageIndicator()
+                        }
+                    }
+                    setLoad(token, pct)
+                }
+                e = me.zhanghai.android.libarchive.Archive.readNextHeader(arcs)
+            }
+            if (shown == 0) return false
+            // se o arquivo não estava em ordem natural, reordena as páginas no final
+            val order = names.indices.sortedWith { a, b -> ComicBook.natural.compare(names[a], names[b]) }
+            val sorted = order.withIndex().all { it.index == it.value }
+            Dbg.log("Quadrinhos: $shown páginas extraídas em ${SystemClock.uptimeMillis() - t0} ms, ordem ok=$sorted")
+            main.post {
+                if (token != loadToken) return@post
+                if (!sorted && comicFiles.size == order.size) {
+                    val nf = ArrayList<File>(order.size)
+                    val ns = ArrayList<IntArray>(order.size)
+                    for (i in order) { nf.add(comicFiles[i]); ns.add(sizes[i]) }
+                    comicFiles = nf
+                    sizes.clear()
+                    sizes.addAll(ns)
+                    bmpCache.evictAll()
+                    imageAdapter.notifyDataSetChanged()
+                }
+                loadPct = -1
+                refreshLoadIndicator()
+            }
+            return true
+        } catch (t: Throwable) {
+            Dbg.log("Quadrinhos: leitura progressiva falhou (páginas=$shown): ${t.javaClass.simpleName}: ${t.message}")
+            if (shown == 0) return false
+            main.post {
+                if (token != loadToken) return@post
+                loadPct = -1
+                refreshLoadIndicator()
+            }
+            return true
+        } finally {
+            try { me.zhanghai.android.libarchive.Archive.readClose(arcs) } catch (_: Throwable) {}
+            try { me.zhanghai.android.libarchive.Archive.free(arcs) } catch (_: Throwable) {}
+            try { pfd.close() } catch (_: Throwable) {}
+        }
+    }
+
     /** CBZ/CBR: abre as imagens como páginas do visualizador do modo Original (zoom, pinça e arrasto iguais). */
     private fun showComic(uri: Uri, token: Int) {
+        comicFiles = ArrayList()
+        comicNames = emptyList()
         sizes.clear()
         imageAdapter.notifyDataSetChanged()
         infoRequested.clear()
@@ -3279,6 +3396,7 @@ class MainActivity : AppCompatActivity() {
                 val old = epubZip
                 epubZip = null
                 try { old?.close() } catch (_: Throwable) {}
+                if (comicStream(uri, token)) return@Thread
                 val f = File(cacheDir, "comic_src_${System.identityHashCode(this@MainActivity)}")
                 val work = File(cacheDir, "comic_${System.identityHashCode(this@MainActivity)}.cbz")
                 val prog: (Int) -> Unit = { p -> setLoad(token, 35 + 35 * p / 100) }
@@ -4450,17 +4568,23 @@ class MainActivity : AppCompatActivity() {
                 h.img.setImageBitmap(hit)
                 return
             }
-            val zip = epubZip ?: return
-            val name = comicNames.getOrNull(position) ?: return
+            val cf = comicFiles.getOrNull(position)
+            val zip = epubZip
+            if (cf == null && zip == null) return
+            val name = if (cf != null) "" else (comicNames.getOrNull(position) ?: return)
             val srcW = sz[0]
             renderExec.execute {
                 if (h.boundPos != position) return@execute
                 val bmp = try {
-                    val e = zip.getEntry(name) ?: throw IllegalStateException()
                     var sample = 1
                     while (srcW / (sample * 2) >= renderW) sample *= 2
                     val o = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
-                    zip.getInputStream(e).use { android.graphics.BitmapFactory.decodeStream(it, null, o) }
+                    if (cf != null) {
+                        android.graphics.BitmapFactory.decodeFile(cf.path, o)
+                    } else {
+                        val e = zip!!.getEntry(name) ?: throw IllegalStateException()
+                        zip.getInputStream(e).use { android.graphics.BitmapFactory.decodeStream(it, null, o) }
+                    }
                 } catch (_: Throwable) {
                     null
                 }

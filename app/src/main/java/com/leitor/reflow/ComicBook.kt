@@ -20,14 +20,14 @@ object ComicBook {
         ".pdf", ".zip", ".rar", ".cbz", ".cbr", ".thumbs", ".ds_store", ".lnk", ".log", ".css", ".js"
     )
 
-    private fun isImage(n: String): Boolean {
+    fun isImage(n: String): Boolean {
         val l = n.lowercase()
         if (l.substringAfterLast('/').startsWith(".")) return false
         return imgExt.any { l.endsWith(it) } && !l.startsWith("__macosx/")
     }
 
     /** Compara nomes "pagina2" antes de "pagina10". */
-    private val natural = Comparator<String> { a, b ->
+    val natural = Comparator<String> { a, b ->
         val x = a.lowercase()
         val y = b.lowercase()
         var i = 0
