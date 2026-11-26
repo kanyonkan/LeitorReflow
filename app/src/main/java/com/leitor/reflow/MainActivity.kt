@@ -3248,8 +3248,7 @@ class MainActivity : AppCompatActivity() {
             val isRar = got >= 3 && h[0] == 0x52.toByte() && h[1] == 0x61.toByte() && h[2] == 0x72.toByte()
             val is7z = got >= 3 && h[0] == 0x37.toByte() && h[1] == 0x7A.toByte() && h[2] == 0xBC.toByte()
             val isZip = got >= 2 && h[0] == 0x50.toByte() && h[1] == 0x4B.toByte()
-            // 7z fica de fora: precisa de leitura com saltos no arquivo, e esse caminho (cópia + conversão) já era o que funcionava
-            if (!isRar && !isZip) return false
+            if (!isRar && !is7z && !isZip) return false
             val dir = File(cacheDir, "comic_pages_${System.identityHashCode(this@MainActivity)}")
             dir.mkdirs()
             dir.listFiles()?.forEach { try { it.delete() } catch (_: Throwable) {} }
