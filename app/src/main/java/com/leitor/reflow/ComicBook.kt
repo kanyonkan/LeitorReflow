@@ -80,7 +80,7 @@ object ComicBook {
                 }
                 if (!ok) {
                     val tj = System.currentTimeMillis()
-                    repack(src, work)
+                    repack(src, work, progress)
                     Dbg.log("ComicBook: junrar converteu em ${System.currentTimeMillis() - tj} ms")
                 }
                 work
@@ -209,9 +209,11 @@ object ComicBook {
         }
     }
 
-    private fun repack(rar: File, out: File) {
+    private fun repack(rar: File, out: File, progress: ((Int) -> Unit)? = null) {
         try {
-            if (isRar5(rar)) { repack5(rar, out); return }
+            if (isRar5(rar)) { repack5(rar, out, progress); return }
+            val rlen = rar.length().coerceAtLeast(1L)
+            var lastP = -1
             Archive(rar).use { arc ->
                 if (arc.mainHeader.isEncrypted) throw IllegalArgumentException("Arquivo protegido por senha")
                 ZipOutputStream(out.outputStream().buffered()).use { zos ->
@@ -221,6 +223,8 @@ object ComicBook {
                     while (h != null) {
                         if (!h.isDirectory) {
                             val name = h.fileName.replace('\\', '/')
+                            val pp = (99L * h.positionInFile / rlen).toInt().coerceIn(0, 99)
+                            if (pp != lastP) { lastP = pp; progress?.invoke(pp) }
                             if (isImage(name) && used.add(name)) {
                                 zos.putNextEntry(ZipEntry(name))
                                 arc.extractFile(h, zos)
@@ -235,7 +239,7 @@ object ComicBook {
             throw e
         } catch (e: Throwable) {
             try {
-                repack5(rar, out)
+                repack5(rar, out, progress)
                 return
             } catch (e2: Throwable) {
             }

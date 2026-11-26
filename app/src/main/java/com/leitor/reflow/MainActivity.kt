@@ -3266,7 +3266,7 @@ class MainActivity : AppCompatActivity() {
                 try { old?.close() } catch (_: Throwable) {}
                 val f = File(cacheDir, "comic_src_${System.identityHashCode(this@MainActivity)}")
                 val work = File(cacheDir, "comic_${System.identityHashCode(this@MainActivity)}.cbz")
-                val prog: (Int) -> Unit = { p -> setLoad(token, 40 + 15 * p / 100) }
+                val prog: (Int) -> Unit = { p -> setLoad(token, 35 + 35 * p / 100) }
                 // CBZ (zip): abre direto do arquivo escolhido, sem copiar (abre na hora, mesmo sendo grande)
                 val tc0 = SystemClock.uptimeMillis()
                 Dbg.log("Quadrinhos: início token=$token")
@@ -3294,7 +3294,7 @@ class MainActivity : AppCompatActivity() {
                     try { pfd?.close() } catch (_: Throwable) {}
                     pfd = null
                     val tcp = SystemClock.uptimeMillis()
-                    copyUri(uri, f, token, 0, 40)
+                    copyUri(uri, f, token, 0, 35)
                     Dbg.log("Quadrinhos: cópia levou ${SystemClock.uptimeMillis() - tcp} ms (${f.length() / 1048576} MB)")
                     epubFile = f
                     val tl = SystemClock.uptimeMillis()
@@ -3302,7 +3302,7 @@ class MainActivity : AppCompatActivity() {
                     Dbg.log("Quadrinhos: ComicBook.load levou ${SystemClock.uptimeMillis() - tl} ms")
                 }
                 val ldr: ComicBook.Loaded = ld!!
-                setLoad(token, 55)
+                setLoad(token, 70)
                 val z = java.util.zip.ZipFile(ldr.zip, ldr.charset)
                 try { pfd?.close() } catch (_: Throwable) {}
                 val names = ldr.result.pages.map { it.image ?: "" }
@@ -3328,7 +3328,8 @@ class MainActivity : AppCompatActivity() {
                     for (k in names.indices) sizes.add(first)
                     imageAdapter.notifyDataSetChanged()
                     status.text = "${names.size} páginas · quadrinhos"
-                    loadPct = if (names.size > 1) 55 else -1
+                    loadPct = if (names.size > 1) 70 else -1
+                    refreshLoadIndicator()
                     Dbg.log("Quadrinhos: páginas mostradas em ${SystemClock.uptimeMillis() - tc0} ms desde o início")
                     restorePending()
                     pendingPage = -1
@@ -3340,7 +3341,7 @@ class MainActivity : AppCompatActivity() {
                     val d = measure(names[i])
                     if (d[0] != first[0] || d[1] != first[1]) diffs.add(intArrayOf(i, d[0], d[1]))
                     if (i % 10 == 0 || i == names.size - 1) {
-                        setLoad(token, 55 + (45L * i / (names.size - 1)).toInt())
+                        setLoad(token, 70 + (30L * i / (names.size - 1)).toInt())
                         val batch = diffs
                         diffs = ArrayList()
                         main.post {
