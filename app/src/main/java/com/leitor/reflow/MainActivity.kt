@@ -525,6 +525,7 @@ class MainActivity : AppCompatActivity() {
     private var keepRot = false // deste PDF: lembrar a rotação da tela
     private var rotation = 0 // 0 = automática/padrão, 1..3 = 90°, 180°, 270° à direita
     private var barVisible = true
+    private var barShownAt = 0L // quando o menu apareceu por último (toque duplo atrasado não deve acionar um botão)
     private var loadToken = 0
     private var listWidth = 0
 
@@ -1433,7 +1434,11 @@ class MainActivity : AppCompatActivity() {
             minWidth = 0
             minimumWidth = 0
             setPadding(dp(4), 0, dp(4), 0)
-            setOnClickListener { onClick() }
+            setOnClickListener {
+                // com a tela ocupada, o 2º toque de um toque duplo pode chegar depois do menu aparecer: ignora
+                if (SystemClock.uptimeMillis() - barShownAt < 500) return@setOnClickListener
+                onClick()
+            }
             buttons.add(this)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 .apply { setMargins(dp(2), 0, dp(2), 0) }
@@ -1492,6 +1497,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleBar() {
         barVisible = !barVisible
+        if (barVisible) barShownAt = SystemClock.uptimeMillis()
         bar.visibility = if (barVisible) View.VISIBLE else View.GONE
         if (barVisible) controller.show(WindowInsetsCompat.Type.systemBars())
         else controller.hide(WindowInsetsCompat.Type.systemBars())
@@ -3242,7 +3248,8 @@ class MainActivity : AppCompatActivity() {
             val isRar = got >= 3 && h[0] == 0x52.toByte() && h[1] == 0x61.toByte() && h[2] == 0x72.toByte()
             val is7z = got >= 3 && h[0] == 0x37.toByte() && h[1] == 0x7A.toByte() && h[2] == 0xBC.toByte()
             val isZip = got >= 2 && h[0] == 0x50.toByte() && h[1] == 0x4B.toByte()
-            if (!isRar && !is7z && !isZip) return false
+            // 7z fica de fora: precisa de leitura com saltos no arquivo, e esse caminho (cópia + conversão) já era o que funcionava
+            if (!isRar && !isZip) return false
             val dir = File(cacheDir, "comic_pages_${System.identityHashCode(this@MainActivity)}")
             dir.mkdirs()
             dir.listFiles()?.forEach { try { it.delete() } catch (_: Throwable) {} }
