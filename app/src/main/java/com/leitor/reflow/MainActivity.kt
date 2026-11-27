@@ -2954,7 +2954,13 @@ class MainActivity : AppCompatActivity() {
                     val ld = ComicBook.load(f, File(cacheDir, "comic_${System.identityHashCode(this@MainActivity)}.cbz"))
                     zipSrc = ld.zip
                     ld.result
-                } else if (docIsDoc) DocBook.load(f) else if (docIsDocx) DocxBook.load(f) else EpubBook.load(f)
+                } else if (docIsDoc) {
+                    val iz = File(cacheDir, "doc_img_${System.identityHashCode(this@MainActivity)}.zip")
+                    try { iz.delete() } catch (_: Throwable) {}
+                    val r = DocBook.load(f, iz)
+                    if (iz.exists() && iz.length() > 0) zipSrc = iz // figuras extraídas do .doc
+                    r
+                } else if (docIsDocx) DocxBook.load(f) else EpubBook.load(f)
                 epubZip = try { java.util.zip.ZipFile(zipSrc) } catch (_: Throwable) { null } // .doc não é zip
                 main.post {
                     if (token != loadToken) return@post
@@ -3242,26 +3248,73 @@ class MainActivity : AppCompatActivity() {
     private fun comicStream(uri: Uri, token: Int): Boolean {
         val pfd = try { contentResolver.openFileDescriptor(uri, "r") } catch (_: Throwable) { null } ?: return false
         var shown = 0
-        val t0 = SystemClock.uptimeMillis()
+        val dir = File(cacheDir, "comic_pages_${System.identityHashCode(this@MainActivity)}")
+        val names = ArrayList<String>()
+        val used = HashSet<String>()
+        var srcLen = 1L
+
+        // mostra uma página recém-extraída (arquivo `out`) e atualiza o contador
+        fun emit(name: String, out: File, pct: Int) {
+            val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            try { android.graphics.BitmapFactory.decodeFile(out.path, o) } catch (_: Throwable) {}
+            val dims = if (o.outWidth > 0 && o.outHeight > 0) intArrayOf(o.outWidth, o.outHeight) else intArrayOf(1000, 1500)
+            names.add(name)
+            val first = shown == 0
+            shown++
+            val count = shown
+            main.post {
+                if (token != loadToken) return@post
+                comicFiles.add(out)
+                sizes.add(dims)
+                imageAdapter.notifyItemInserted(sizes.size - 1)
+                status.text = "$count páginas · quadrinhos"
+                if (first) {
+                    restorePending()
+                    pendingPage = -1
+                    updatePageIndicator()
+                }
+            }
+            setLoad(token, pct)
+        }
+
+        // fim: se o arquivo não estava em ordem natural, reordena as páginas; esconde o contador
+        fun finishPages() {
+            val order = names.indices.sortedWith { a, b -> ComicBook.natural.compare(names[a], names[b]) }
+            val sorted = order.withIndex().all { it.index == it.value }
+            main.post {
+                if (token != loadToken) return@post
+                if (!sorted && comicFiles.size == order.size) {
+                    val nf = ArrayList<File>(order.size)
+                    val ns = ArrayList<IntArray>(order.size)
+                    for (i in order) { nf.add(comicFiles[i]); ns.add(sizes[i]) }
+                    comicFiles = nf
+                    sizes.clear()
+                    sizes.addAll(ns)
+                    bmpCache.evictAll()
+                    imageAdapter.notifyDataSetChanged()
+                }
+                loadPct = -1
+                refreshLoadIndicator()
+            }
+        }
+
         val arcs = me.zhanghai.android.libarchive.Archive.readNew()
+        var is7z = false
         try {
             val h = ByteArray(8)
             val got = try { android.system.Os.pread(pfd.fileDescriptor, h, 0, 8, 0L) } catch (_: Throwable) { -1 }
             val isRar = got >= 3 && h[0] == 0x52.toByte() && h[1] == 0x61.toByte() && h[2] == 0x72.toByte()
-            val is7z = got >= 3 && h[0] == 0x37.toByte() && h[1] == 0x7A.toByte() && h[2] == 0xBC.toByte()
+            is7z = got >= 3 && h[0] == 0x37.toByte() && h[1] == 0x7A.toByte() && h[2] == 0xBC.toByte()
             val isZip = got >= 2 && h[0] == 0x50.toByte() && h[1] == 0x4B.toByte()
             if (!isRar && !is7z && !isZip) return false
-            val dir = File(cacheDir, "comic_pages_${System.identityHashCode(this@MainActivity)}")
             dir.mkdirs()
             dir.listFiles()?.forEach { try { it.delete() } catch (_: Throwable) {} }
             me.zhanghai.android.libarchive.Archive.readSupportFilterAll(arcs)
             me.zhanghai.android.libarchive.Archive.readSupportFormatAll(arcs)
             me.zhanghai.android.libarchive.Archive.readOpenFd(arcs, pfd.fd, 65536)
-            val srcLen = pfd.statSize.coerceAtLeast(1L)
+            srcLen = pfd.statSize.coerceAtLeast(1L)
             val buf = java.nio.ByteBuffer.allocateDirect(65536)
             val tmp = ByteArray(65536)
-            val used = HashSet<String>()
-            val names = ArrayList<String>()
             var written = 0L
             var skipped = 0L // tamanho das entradas que não são imagem: também contam no progresso
             var e = me.zhanghai.android.libarchive.Archive.readNextHeader(arcs)
@@ -3287,27 +3340,7 @@ class MainActivity : AppCompatActivity() {
                             written += n
                         }
                     }
-                    val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    try { android.graphics.BitmapFactory.decodeFile(out.path, o) } catch (_: Throwable) {}
-                    val dims = if (o.outWidth > 0 && o.outHeight > 0) intArrayOf(o.outWidth, o.outHeight) else intArrayOf(1000, 1500)
-                    names.add(name)
-                    val first = shown == 0
-                    shown++
-                    val count = shown
-                    val pct = (99L * (written + skipped) / srcLen).toInt().coerceAtMost(99)
-                    main.post {
-                        if (token != loadToken) return@post
-                        comicFiles.add(out)
-                        sizes.add(dims)
-                        imageAdapter.notifyItemInserted(sizes.size - 1)
-                        status.text = "$count páginas · quadrinhos"
-                        if (first) {
-                            restorePending()
-                            pendingPage = -1
-                            updatePageIndicator()
-                        }
-                    }
-                    setLoad(token, pct)
+                    emit(name, out, (99L * (written + skipped) / srcLen).toInt().coerceAtMost(99))
                 } else if (size > 0) {
                     skipped += size
                     setLoad(token, (99L * (written + skipped) / srcLen).toInt().coerceAtMost(99))
@@ -3315,33 +3348,66 @@ class MainActivity : AppCompatActivity() {
                 e = me.zhanghai.android.libarchive.Archive.readNextHeader(arcs)
             }
             if (shown == 0) return false
-            // se o arquivo não estava em ordem natural, reordena as páginas no final
-            val order = names.indices.sortedWith { a, b -> ComicBook.natural.compare(names[a], names[b]) }
-            val sorted = order.withIndex().all { it.index == it.value }
-            main.post {
-                if (token != loadToken) return@post
-                if (!sorted && comicFiles.size == order.size) {
-                    val nf = ArrayList<File>(order.size)
-                    val ns = ArrayList<IntArray>(order.size)
-                    for (i in order) { nf.add(comicFiles[i]); ns.add(sizes[i]) }
-                    comicFiles = nf
-                    sizes.clear()
-                    sizes.addAll(ns)
-                    bmpCache.evictAll()
-                    imageAdapter.notifyDataSetChanged()
-                }
-                loadPct = -1
-                refreshLoadIndicator()
-            }
+            finishPages()
             return true
         } catch (t: Throwable) {
-            if (shown == 0) return false
-            main.post {
-                if (token != loadToken) return@post
-                loadPct = -1
-                refreshLoadIndicator()
+            if (shown > 0) {
+                main.post {
+                    if (token != loadToken) return@post
+                    loadPct = -1
+                    refreshLoadIndicator()
+                }
+                return true
             }
-            return true
+            if (!is7z) return false
+            // 7z que a primeira biblioteca recusou: segunda biblioteca (commons-compress), também aos poucos
+            try {
+                names.clear()
+                used.clear()
+                dir.mkdirs()
+                dir.listFiles()?.forEach { try { it.delete() } catch (_: Throwable) {} }
+                val fis = java.io.FileInputStream(pfd.fileDescriptor)
+                var done = 0L
+                val b2 = ByteArray(65536)
+                org.apache.commons.compress.archivers.sevenz.SevenZFile(fis.channel).use { sz ->
+                    var en = sz.nextEntry
+                    while (en != null) {
+                        if (token != loadToken) return true
+                        if (!en.isDirectory && en.hasStream()) {
+                            val name = (en.name ?: "").replace('\\', '/')
+                            if (ComicBook.isImage(name) && used.add(name)) {
+                                val ext = name.substringAfterLast('.', "jpg").lowercase().filter { it.isLetterOrDigit() }.ifEmpty { "jpg" }
+                                val out = File(dir, "%05d.%s".format(names.size, ext))
+                                var left = en.size
+                                java.io.FileOutputStream(out).buffered(65536).use { os ->
+                                    while (left > 0) {
+                                        val r = sz.read(b2, 0, minOf(b2.size.toLong(), left).toInt())
+                                        if (r < 0) break
+                                        os.write(b2, 0, r)
+                                        left -= r
+                                        done += r
+                                    }
+                                }
+                                emit(name, out, (99L * done / srcLen).toInt().coerceAtMost(99))
+                            } else {
+                                done += en.size.coerceAtLeast(0L)
+                            }
+                        }
+                        en = sz.nextEntry
+                    }
+                }
+                if (shown == 0) return false
+                finishPages()
+                return true
+            } catch (t2: Throwable) {
+                if (shown == 0) return false
+                main.post {
+                    if (token != loadToken) return@post
+                    loadPct = -1
+                    refreshLoadIndicator()
+                }
+                return true
+            }
         } finally {
             try { me.zhanghai.android.libarchive.Archive.readClose(arcs) } catch (_: Throwable) {}
             try { me.zhanghai.android.libarchive.Archive.free(arcs) } catch (_: Throwable) {}

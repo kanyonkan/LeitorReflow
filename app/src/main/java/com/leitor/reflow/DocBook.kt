@@ -11,20 +11,25 @@ object DocBook {
 
     private const val MAX_FILE = 60 * 1024 * 1024
 
-    fun load(file: File): EpubBook.Result {
+    fun load(file: File, imagesZip: File? = null): EpubBook.Result {
         if (file.length() > MAX_FILE) throw IllegalArgumentException("Arquivo muito grande")
         val data = file.readBytes()
         if (data.size > 4 && data[0] == 0x50.toByte() && data[1] == 0x4B.toByte()) {
             return DocxBook.load(file) // na verdade é um .docx
         }
+        var picNames: List<String?> = emptyList()
         val text = try {
-            extractText(data)
+            val cfb = Cfb(data)
+            if (imagesZip != null) {
+                try { picNames = writePictures(cfb.stream("Data"), imagesZip) } catch (_: Throwable) { picNames = emptyList() }
+            }
+            extractText(cfb)
         } catch (e: IllegalArgumentException) {
             throw e
         } catch (e: Throwable) {
             throw IllegalArgumentException("Não foi possível ler este arquivo .doc")
         }
-        return build(text)
+        return build(text, picNames)
     }
 
     // ------------------------------------------------------------------ bytes
@@ -159,8 +164,7 @@ object DocBook {
 
     // ------------------------------------------------------------------ texto do Word
 
-    private fun extractText(data: ByteArray): String {
-        val cfb = Cfb(data)
+    private fun extractText(cfb: Cfb): String {
         val wd = cfb.stream("WordDocument") ?: throw IllegalArgumentException("Não é um documento do Word")
         if (wd.size < 0x40 || u16(wd, 0) != 0xA5EC) throw IllegalArgumentException("Não é um documento do Word")
         if (u16(wd, 2) < 193) throw IllegalArgumentException("Formato do Word anterior ao 97 não é suportado")
@@ -210,6 +214,73 @@ object DocBook {
         return if (ccpText in 1..sb.length) sb.substring(0, ccpText) else sb.toString()
     }
 
+
+    // ------------------------------------------------------------------ figuras
+
+    private class Blip(val bytes: ByteArray, val ext: String)
+
+    /** Procura uma figura JPEG ou PNG (OfficeArt) dentro de [s, e). */
+    private fun findBlip(d: ByteArray, s: Int, e: Int, depth: Int = 0): Blip? {
+        if (depth > 8) return null
+        var p = s
+        while (p + 8 <= e) {
+            val vi = u16(d, p)
+            val type = u16(d, p + 2)
+            val len = i32(d, p + 4)
+            if (len < 0 || p.toLong() + 8 + len > e) return null
+            val ver = vi and 0xF
+            val inst = vi shr 4
+            val end = p + 8 + len
+            if (ver == 0xF) {
+                findBlip(d, p + 8, end, depth + 1)?.let { return it }
+            } else if (type == 0xF007) { // FBSE: cabeçalho de 36 bytes, nome e a figura em seguida
+                if (len > 37) {
+                    val cbName = d[p + 8 + 33].toInt() and 0xFF
+                    findBlip(d, p + 8 + 36 + cbName, end, depth + 1)?.let { return it }
+                }
+            } else if (type == 0xF01D || type == 0xF01E) {
+                val two = if (type == 0xF01D) (inst == 0x46B || inst == 0x6E3) else (inst == 0x6E1)
+                val start = p + 8 + 16 + (if (two) 16 else 0) + 1
+                if (start < end) return Blip(d.copyOfRange(start, end), if (type == 0xF01D) "jpg" else "png")
+            }
+            p = end
+        }
+        return null
+    }
+
+    /** Lê as figuras do fluxo "Data" (uma estrutura PICF após a outra) e as grava num zip; devolve o nome de cada uma (ou null). */
+    private fun writePictures(d: ByteArray?, out: File): List<String?> {
+        if (d == null) return emptyList()
+        val names = ArrayList<String?>()
+        var o = 0
+        var count = 0
+        java.util.zip.ZipOutputStream(out.outputStream().buffered(65536)).use { zos ->
+            zos.setLevel(0)
+            while (o + 68 <= d.size) {
+                val lcb = i32(d, o)
+                val cb = u16(d, o + 4)
+                if (lcb <= 0 || cb < 68 || lcb < cb || o.toLong() + lcb > d.size) break
+                val b = try { findBlip(d, o + cb, o + lcb) } catch (_: Throwable) { null }
+                if (b != null && b.bytes.size >= 600) { // ignora enfeites minúsculos
+                    count++
+                    val nm = "doc%04d.%s".format(count, b.ext)
+                    zos.putNextEntry(java.util.zip.ZipEntry(nm))
+                    zos.write(b.bytes)
+                    zos.closeEntry()
+                    names.add(nm)
+                } else {
+                    names.add(null)
+                }
+                o += lcb
+            }
+        }
+        if (count == 0) {
+            try { out.delete() } catch (_: Throwable) {}
+            return emptyList()
+        }
+        return names
+    }
+
     // ------------------------------------------------------------------ páginas
 
     private class Field {
@@ -220,7 +291,8 @@ object DocBook {
 
     private val linkRegex = Regex("HYPERLINK\\s+\"([^\"]+)\"")
 
-    private fun build(raw: String): EpubBook.Result {
+    private fun build(raw: String, picNames: List<String?>): EpubBook.Result {
+        var picIdx = 0
         val paras = ArrayList<EpubBook.Para>()
         val links = ArrayList<EpubBook.LinkRef>()
         val sb = StringBuilder()
@@ -277,6 +349,17 @@ object DocBook {
                 continue
             }
             when (code) {
+                0x01 -> { // figura embutida: a n-ésima marca no texto é a n-ésima figura do fluxo "Data"
+                    if (picNames.isNotEmpty()) {
+                        val nm = picNames.getOrNull(picIdx)
+                        picIdx++
+                        if (nm != null) {
+                            flush()
+                            paras.add(EpubBook.Para("", emptyList(), false, nm, emptyList()))
+                        }
+                    }
+                    prev07 = false
+                }
                 0x0D -> {
                     flush()
                     prev07 = false
