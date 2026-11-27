@@ -31,6 +31,8 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/META-INF/LICENSE*"
+            excludes += "/META-INF/NOTICE*"
         }
     }
 }
@@ -43,4 +45,6 @@ dependencies {
     implementation("org.jsoup:jsoup:1.17.2")
     implementation("com.github.junrar:junrar:7.5.5")
     implementation("me.zhanghai.android.libarchive:library:1.1.6")
+    implementation("org.apache.commons:commons-compress:1.21")
+    implementation("org.tukaani:xz:1.9")
 }

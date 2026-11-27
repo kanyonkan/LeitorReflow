@@ -507,6 +507,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingPage = -1
     private val backStack = ArrayList<Int>()
     private var lastLinkTap = 0L
+    private var lastImgTap = 0L
 
     private var reflowMode = true
     private var night = false
@@ -648,6 +649,7 @@ class MainActivity : AppCompatActivity() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 // um link acabou de ser tocado: não alterna a barra
                 if (SystemClock.uptimeMillis() - lastLinkTap < 700) return false
+                if (SystemClock.uptimeMillis() - lastImgTap < 700) return false // toque numa figura abre o visualizador
                 if (overOverlay(e)) return false
                 val w = root.width
                 val h = root.height
@@ -4171,6 +4173,63 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Toque numa figura do EPUB: abre a figura em tela cheia, com zoom por pinça, arrasto, toque duplo e botões. */
+    private fun showImageViewer(name: String) {
+        val zip = epubZip ?: return
+        val dlg = android.app.Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        val frame = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        val zv = ZoomImageView(this)
+        frame.addView(zv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val wait = TextView(this).apply {
+            text = "Carregando figura…"
+            setTextColor(Color.WHITE)
+        }
+        frame.addView(wait, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.parseColor("#88000000"))
+        }
+        fun btn(t: String, a: () -> Unit) = Button(this).apply {
+            text = t
+            isAllCaps = false
+            textSize = 14f
+            setOnClickListener { a() }
+            row.addView(this, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        btn("−") { zv.zoomBy(1f / 1.5f) }
+        btn("+") { zv.zoomBy(1.5f) }
+        btn("Ajustar") { zv.fit() }
+        btn("Fechar") { dlg.dismiss() }
+        frame.addView(row, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
+        dlg.setContentView(frame)
+        dlg.show()
+        try {
+            imgExec.execute {
+                val bmp = try {
+                    val e = zip.getEntry(name) ?: throw IllegalStateException()
+                    val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    zip.getInputStream(e).use { android.graphics.BitmapFactory.decodeStream(it, null, o) }
+                    var sample = 1
+                    while (o.outWidth / sample > 4096 || o.outHeight / sample > 4096 ||
+                        (o.outWidth / sample).toLong() * (o.outHeight / sample) > 12_000_000L) sample *= 2
+                    val o2 = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                    zip.getInputStream(e).use { android.graphics.BitmapFactory.decodeStream(it, null, o2) }
+                } catch (_: Throwable) {
+                    null
+                }
+                main.post {
+                    if (!dlg.isShowing) return@post
+                    wait.visibility = View.GONE
+                    if (bmp != null) zv.setBitmap(bmp) else {
+                        Toast.makeText(this, "Não foi possível ampliar a figura.", Toast.LENGTH_SHORT).show()
+                        dlg.dismiss()
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     private fun closeRenderer() {
         synchronized(rendererLock) {
             try { renderer?.close() } catch (_: Throwable) {}
@@ -4275,7 +4334,13 @@ class MainActivity : AppCompatActivity() {
                 h.img.tag = imgName
                 h.img.setImageDrawable(null)
                 loadEpubImage(imgName) { bmp -> if (h.img.tag == imgName) h.img.setImageBitmap(bmp) }
+                h.img.setOnClickListener {
+                    lastImgTap = SystemClock.uptimeMillis()
+                    showImageViewer(imgName)
+                }
             } else {
+                h.img.setOnClickListener(null)
+                h.img.isClickable = false
                 h.img.tag = null
                 h.img.setImageDrawable(null)
                 h.img.visibility = View.GONE

@@ -82,7 +82,17 @@ object ComicBook {
                 work
             }
             is7z -> {
-                repack5(src, work, progress)
+                try {
+                    repack5(src, work, progress)
+                } catch (e: Throwable) {
+                    // a primeira biblioteca (libarchive) recusou o arquivo: tenta a segunda (commons-compress)
+                    try { work.delete() } catch (_: Throwable) {}
+                    try {
+                        repack7z(src, work, progress)
+                    } catch (e2: Throwable) {
+                        throw IllegalStateException("${e.message} (segunda biblioteca: ${e2.message})", e)
+                    }
+                }
                 work
             }
             else -> {
@@ -241,5 +251,43 @@ object ComicBook {
             }
             throw IllegalArgumentException("Não foi possível ler este CBR (arquivo corrompido ou formato RAR não suportado)")
         }
+    }
+
+    /** Segunda leitura de 7z (commons-compress): usada só quando a primeira falha. */
+    private fun repack7z(src: File, out: File, progress: ((Int) -> Unit)?) {
+        val total = src.length().coerceAtLeast(1L)
+        var done = 0L
+        var lastP = -1
+        val used = HashSet<String>()
+        val buf = ByteArray(65536)
+        var n = 0
+        org.apache.commons.compress.archivers.sevenz.SevenZFile(src).use { sz ->
+            ZipOutputStream(out.outputStream().buffered(65536)).use { zos ->
+                zos.setLevel(0)
+                var e = sz.nextEntry
+                while (e != null) {
+                    if (!e.isDirectory && e.hasStream()) {
+                        val name = (e.name ?: "").replace('\\', '/')
+                        if (isImage(name) && used.add(name)) {
+                            zos.putNextEntry(ZipEntry(name))
+                            var left = e.size
+                            while (left > 0) {
+                                val r = sz.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
+                                if (r < 0) break
+                                zos.write(buf, 0, r)
+                                left -= r
+                                done += r
+                            }
+                            zos.closeEntry()
+                            n++
+                            val pp = (99L * done / total).toInt().coerceIn(0, 99)
+                            if (pp != lastP) { lastP = pp; progress?.invoke(pp) }
+                        }
+                    }
+                    e = sz.nextEntry
+                }
+            }
+        }
+        if (n == 0) throw IllegalStateException("nenhuma imagem encontrada")
     }
 }
