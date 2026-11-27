@@ -84,11 +84,14 @@ object ComicBook {
             is7z -> {
                 try {
                     repack5(src, work, progress)
+                    Dbg.log("ComicBook: 7z lido pela libarchive")
                 } catch (e: Throwable) {
+                    Dbg.log("ComicBook: libarchive recusou o 7z: ${e.javaClass.simpleName}: ${e.message}")
                     // a primeira biblioteca (libarchive) recusou o arquivo: tenta a segunda (commons-compress)
                     try { work.delete() } catch (_: Throwable) {}
                     try {
                         repack7z(src, work, progress)
+                        Dbg.log("ComicBook: 7z lido pela segunda biblioteca")
                     } catch (e2: Throwable) {
                         throw IllegalStateException("${e.message} (segunda biblioteca: ${e2.message})", e)
                     }

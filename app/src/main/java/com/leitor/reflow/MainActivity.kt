@@ -141,6 +141,22 @@ class FixedWidthScroll(context: Context) : HorizontalScrollView(context) {
     }
 }
 
+/** REGISTRO DE TESTE TEMPORÁRIO (versão de teste): anota rolagem, inércia, quadros lentos e leitura de imagens dos quadrinhos. */
+object Dbg {
+    private val sb = StringBuilder()
+    private val fmt = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
+    @Volatile var on = false
+
+    @Synchronized fun log(m: String) {
+        if (!on) return
+        sb.append(fmt.format(java.util.Date())).append(' ').append(m).append('\n')
+        if (sb.length > 120000) sb.delete(0, sb.length - 90000)
+    }
+
+    @Synchronized fun text(): String = sb.toString()
+    @Synchronized fun clear() = sb.setLength(0)
+}
+
 /** LinearLayoutManager que permite travar a rolagem lateral feita com o dedo. */
 class PagerLayoutManager(context: Context, orientation: Int) :
     LinearLayoutManager(context, orientation, false) {
@@ -1190,6 +1206,28 @@ class MainActivity : AppCompatActivity() {
         row2Lp.topMargin = dp(2)
         bar.addView(row2, row2Lp)
         rowTwo = row2
+
+        // --- VERSÃO DE TESTE: registro de rolagem (toque = copiar, segurar = limpar) ---
+        val dbgBtn = makeBtn("Registro (teste): toque = copiar, segurar = limpar") {
+            val head = "LeitorReflow registro de teste | ${android.os.Build.MODEL} | Android ${android.os.Build.VERSION.RELEASE}\n"
+            val txt = head + Dbg.text()
+            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                .setPrimaryClip(ClipData.newPlainText("registro", txt))
+            Toast.makeText(this, "Registro copiado (${txt.count { it == '\n' }} linhas). Cole no chat.", Toast.LENGTH_LONG).show()
+        }
+        dbgBtn.setOnLongClickListener {
+            Dbg.clear()
+            Toast.makeText(this, "Registro limpo.", Toast.LENGTH_SHORT).show()
+            true
+        }
+        Dbg.on = true
+        val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row3.addView(dbgBtn)
+        val row3Lp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        row3Lp.topMargin = dp(2)
+        bar.addView(row3, row3Lp)
 
         status = TextView(this).apply {
             text = "Toque em Abrir e escolha um PDF, DOC, DOCX, EPUB, CBZ, CBR ou CB7."
@@ -3252,6 +3290,8 @@ class MainActivity : AppCompatActivity() {
         val names = ArrayList<String>()
         val used = HashSet<String>()
         var srcLen = 1L
+        val tStart = SystemClock.uptimeMillis()
+        Dbg.log("Quadrinhos: início da leitura progressiva token=$token")
 
         // mostra uma página recém-extraída (arquivo `out`) e atualiza o contador
         fun emit(name: String, out: File, pct: Int) {
@@ -3260,6 +3300,7 @@ class MainActivity : AppCompatActivity() {
             val dims = if (o.outWidth > 0 && o.outHeight > 0) intArrayOf(o.outWidth, o.outHeight) else intArrayOf(1000, 1500)
             names.add(name)
             val first = shown == 0
+            if (first) Dbg.log("Quadrinhos: primeira página pronta em ${SystemClock.uptimeMillis() - tStart} ms (${name})")
             shown++
             val count = shown
             main.post {
@@ -3306,6 +3347,7 @@ class MainActivity : AppCompatActivity() {
             val isRar = got >= 3 && h[0] == 0x52.toByte() && h[1] == 0x61.toByte() && h[2] == 0x72.toByte()
             is7z = got >= 3 && h[0] == 0x37.toByte() && h[1] == 0x7A.toByte() && h[2] == 0xBC.toByte()
             val isZip = got >= 2 && h[0] == 0x50.toByte() && h[1] == 0x4B.toByte()
+            Dbg.log("Quadrinhos: formato rar=$isRar 7z=$is7z zip=$isZip, tamanho=${pfd.statSize}")
             if (!isRar && !is7z && !isZip) return false
             dir.mkdirs()
             dir.listFiles()?.forEach { try { it.delete() } catch (_: Throwable) {} }
@@ -3347,10 +3389,12 @@ class MainActivity : AppCompatActivity() {
                 }
                 e = me.zhanghai.android.libarchive.Archive.readNextHeader(arcs)
             }
+            Dbg.log("Quadrinhos: libarchive terminou, páginas=$shown em ${SystemClock.uptimeMillis() - tStart} ms")
             if (shown == 0) return false
             finishPages()
             return true
         } catch (t: Throwable) {
+            Dbg.log("Quadrinhos: libarchive falhou (páginas=$shown, 7z=$is7z) em ${SystemClock.uptimeMillis() - tStart} ms: ${t.javaClass.simpleName}: ${t.message}")
             if (shown > 0) {
                 main.post {
                     if (token != loadToken) return@post
@@ -3361,6 +3405,7 @@ class MainActivity : AppCompatActivity() {
             }
             if (!is7z) return false
             // 7z que a primeira biblioteca recusou: segunda biblioteca (commons-compress), também aos poucos
+            Dbg.log("Quadrinhos: tentando a segunda biblioteca (commons-compress)")
             try {
                 names.clear()
                 used.clear()
@@ -3396,10 +3441,12 @@ class MainActivity : AppCompatActivity() {
                         en = sz.nextEntry
                     }
                 }
+                Dbg.log("Quadrinhos: segunda biblioteca terminou, páginas=$shown em ${SystemClock.uptimeMillis() - tStart} ms")
                 if (shown == 0) return false
                 finishPages()
                 return true
             } catch (t2: Throwable) {
+                Dbg.log("Quadrinhos: segunda biblioteca falhou (páginas=$shown) em ${SystemClock.uptimeMillis() - tStart} ms: ${t2.javaClass.simpleName}: ${t2.message}")
                 if (shown == 0) return false
                 main.post {
                     if (token != loadToken) return@post
@@ -3431,6 +3478,7 @@ class MainActivity : AppCompatActivity() {
                 epubZip = null
                 try { old?.close() } catch (_: Throwable) {}
                 if (comicStream(uri, token)) return@Thread
+                Dbg.log("Quadrinhos: caminho progressivo não serviu; usando cópia + conversão")
                 val f = File(cacheDir, "comic_src_${System.identityHashCode(this@MainActivity)}")
                 val work = File(cacheDir, "comic_${System.identityHashCode(this@MainActivity)}.cbz")
                 val prog: (Int) -> Unit = { p -> setLoad(token, 35 + 35 * p / 100) }
@@ -3458,9 +3506,11 @@ class MainActivity : AppCompatActivity() {
                     pfd = null
                     val tcp = SystemClock.uptimeMillis()
                     copyUri(uri, f, token, 0, 35)
+                    Dbg.log("Quadrinhos: cópia levou ${SystemClock.uptimeMillis() - tcp} ms")
                     epubFile = f
                     val tl = SystemClock.uptimeMillis()
                     ld = ComicBook.load(f, work, prog)
+                    Dbg.log("Quadrinhos: conversão levou ${SystemClock.uptimeMillis() - tl} ms")
                 }
                 val ldr: ComicBook.Loaded = ld!!
                 setLoad(token, 70)
