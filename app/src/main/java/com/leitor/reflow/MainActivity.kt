@@ -3412,6 +3412,7 @@ class MainActivity : AppCompatActivity() {
                 dir.mkdirs()
                 dir.listFiles()?.forEach { try { it.delete() } catch (_: Throwable) {} }
                 val fis = java.io.FileInputStream(pfd.fileDescriptor)
+                fis.channel.position(0L) // a primeira biblioteca já avançou o arquivo: volta ao início
                 var done = 0L
                 val b2 = ByteArray(65536)
                 org.apache.commons.compress.archivers.sevenz.SevenZFile(fis.channel).use { sz ->
